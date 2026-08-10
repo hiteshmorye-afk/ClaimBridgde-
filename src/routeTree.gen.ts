@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ClaimsClaimIdRouteImport } from './routes/claims.$claimId'
+import { Route as ClaimsNewRouteImport } from './routes/claims.new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +24,49 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimsClaimIdRoute = ClaimsClaimIdRouteImport.update({
+  id: '/claims/$claimId',
+  path: '/claims/$claimId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClaimsNewRoute = ClaimsNewRouteImport.update({
+  id: '/claims/new',
+  path: '/claims/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims/new': typeof ClaimsNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims/new': typeof ClaimsNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/claims/$claimId': typeof ClaimsClaimIdRoute
+  '/claims/new': typeof ClaimsNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth'
+  fullPaths: '/' | '/auth' | '/claims/$claimId' | '/claims/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth'
-  id: '__root__' | '/' | '/auth'
+  to: '/' | '/auth' | '/claims/$claimId' | '/claims/new'
+  id: '__root__' | '/' | '/auth' | '/claims/$claimId' | '/claims/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
+  ClaimsClaimIdRoute: typeof ClaimsClaimIdRoute
+  ClaimsNewRoute: typeof ClaimsNewRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +85,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claims/$claimId': {
+      id: '/claims/$claimId'
+      path: '/claims/$claimId'
+      fullPath: '/claims/$claimId'
+      preLoaderRoute: typeof ClaimsClaimIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/claims/new': {
+      id: '/claims/new'
+      path: '/claims/new'
+      fullPath: '/claims/new'
+      preLoaderRoute: typeof ClaimsNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
+  ClaimsClaimIdRoute: ClaimsClaimIdRoute,
+  ClaimsNewRoute: ClaimsNewRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
