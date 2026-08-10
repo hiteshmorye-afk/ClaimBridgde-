@@ -14,7 +14,72 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      documents: {
+        Row: {
+          created_at: string
+          currency: string | null
+          doc_type: string
+          document_date: string | null
+          error_message: string | null
+          file_name: string
+          id: string
+          lab_results: Json
+          line_items: Json
+          mime_type: string | null
+          patient_name: string | null
+          provider_name: string | null
+          raw_text: string | null
+          status: string
+          storage_path: string
+          summary: string | null
+          total_amount: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          currency?: string | null
+          doc_type?: string
+          document_date?: string | null
+          error_message?: string | null
+          file_name: string
+          id?: string
+          lab_results?: Json
+          line_items?: Json
+          mime_type?: string | null
+          patient_name?: string | null
+          provider_name?: string | null
+          raw_text?: string | null
+          status?: string
+          storage_path: string
+          summary?: string | null
+          total_amount?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          currency?: string | null
+          doc_type?: string
+          document_date?: string | null
+          error_message?: string | null
+          file_name?: string
+          id?: string
+          lab_results?: Json
+          line_items?: Json
+          mime_type?: string | null
+          patient_name?: string | null
+          provider_name?: string | null
+          raw_text?: string | null
+          status?: string
+          storage_path?: string
+          summary?: string | null
+          total_amount?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
