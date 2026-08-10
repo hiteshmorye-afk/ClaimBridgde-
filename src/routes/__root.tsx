@@ -78,16 +78,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "MedExtract — Hospital Bill & Report OCR" },
+      { title: "ClaimBridge — Intelligent Insurance Claim Verification" },
       {
         name: "description",
         content:
-          "Upload hospital bills and medical reports, extract structured data automatically, and review everything in one dashboard.",
+          "Verify, validate and prepare insurance claims before submission — for hospital insurance coordinators.",
       },
-      { property: "og:title", content: "MedExtract — Hospital Bill & Report OCR" },
+      { property: "og:title", content: "ClaimBridge — Intelligent Insurance Claim Verification" },
       {
         property: "og:description",
-        content: "Turn hospital bills and lab reports into structured, searchable data.",
+        content: "Verify, validate and prepare insurance claims before submission.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

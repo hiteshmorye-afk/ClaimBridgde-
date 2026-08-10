@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-ro
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Activity, Loader2 } from "lucide-react";
+import { Loader2, ShieldCheck } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
@@ -15,15 +15,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
-      { title: "Sign in — MedExtract" },
+      { title: "Sign in — ClaimBridge" },
       {
         name: "description",
-        content: "Sign in to upload hospital bills and reports and view extracted data.",
+        content:
+          "Sign in to verify, validate and prepare insurance claims before submission.",
       },
-      { property: "og:title", content: "Sign in — MedExtract" },
+      { property: "og:title", content: "Sign in — ClaimBridge" },
       {
         property: "og:description",
-        content: "Access your medical document extraction dashboard.",
+        content: "Access your insurance claim verification dashboard.",
       },
     ],
   }),
@@ -64,7 +65,7 @@ function AuthPage() {
           options: { emailRedirectTo: window.location.origin },
         });
         if (error) throw error;
-        toast.success("Account created. You can start uploading documents.");
+        toast.success("Account created. You can start verifying claims.");
       } else {
         const { error } = await supabase.auth.signInWithPassword(parsed.data);
         if (error) throw error;
@@ -95,12 +96,14 @@ function AuthPage() {
     <main className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
       <div className="w-full max-w-md">
         <div className="mb-8 flex items-center gap-3">
-          <span className="flex size-11 items-center justify-center rounded-xl bg-gradient-hero text-primary-foreground">
-            <Activity className="size-5" />
+          <span className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <ShieldCheck className="size-5" />
           </span>
           <div>
-            <p className="font-display text-lg font-semibold">MedExtract</p>
-            <p className="text-sm text-muted-foreground">Bills & reports, turned into data</p>
+            <p className="font-display text-lg font-semibold">ClaimBridge</p>
+            <p className="text-sm text-muted-foreground">
+              Intelligent Insurance Claim Verification
+            </p>
           </div>
         </div>
 
@@ -111,8 +114,8 @@ function AuthPage() {
             </CardTitle>
             <CardDescription>
               {mode === "signin"
-                ? "Sign in to view your extracted documents."
-                : "Start extracting data from hospital bills and reports."}
+                ? "Sign in to your Hospital Insurance Coordinator workspace."
+                : "Verify, validate and prepare insurance claims before submission."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
