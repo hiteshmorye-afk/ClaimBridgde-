@@ -30,3 +30,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ClaimBridge backend
+backend/venv/
+backend/.env
+backend/test_images/
+__pycache__/
+*.pyc

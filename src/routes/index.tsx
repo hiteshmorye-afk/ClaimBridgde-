@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Loader2, LogOut, Plus, Search } from "lucide-react";
 
-import { supabase } from "@/integrations/supabase/client";
+import { signOutDemoUser } from "@/hooks/useAuth";
 import { useAuth } from "@/hooks/useAuth";
 import { BrandLockup, ReadinessScore, StatusBadge } from "@/components/claim-ui";
 import { formatDate, formatINR, useClaims, type ClaimStatus } from "@/lib/claims";
@@ -86,8 +86,8 @@ function Dashboard() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={async () => {
-                await supabase.auth.signOut();
+              onClick={() => {
+                signOutDemoUser();
                 navigate({ to: "/auth" });
               }}
             >

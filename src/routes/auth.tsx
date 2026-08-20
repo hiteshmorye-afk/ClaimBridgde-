@@ -4,13 +4,14 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Loader2, ShieldCheck } from "lucide-react";
 
-import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
+import { signInDemoUser } from "@/hooks/useAuth";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+
+// TODO: Replace this demo auth flow with real FastAPI + JWT + PostgreSQL authentication.
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -43,53 +44,100 @@ function AuthPage() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!loading && user) navigate({ to: "/" });
   }, [loading, user, navigate]);
 
-  async function onSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    const parsed = credentials.safeParse({ email, password });
-    if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? "Invalid details");
-      return;
+ async function onSubmit(event: React.FormEvent) {
+  event.preventDefault();
+
+  const parsed = credentials.safeParse({ email, password });
+
+  if (!parsed.success) {
+  toast.error(parsed.error.issues[0]?.message ?? "Invalid details");
+  return;
+}
+
+if (mode === "signup") {
+  if (!fullName.trim()) {
+    toast.error("Please enter your full name");
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    toast.error("Passwords do not match");
+    return;
+  }
+}
+
+setBusy(true);
+
+  setBusy(true);
+
+  try {
+    const endpoint =
+      mode === "signin"
+        ? "http://127.0.0.1:8000/auth/login"
+        : "http://127.0.0.1:8000/auth/register";
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: parsed.data.email,
+        password: parsed.data.password,
+        ...(mode === "signup" && {
+          full_name: fullName.trim(),
+          role: "Coordinator",
+        }),
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.detail || "Authentication failed"
+      );
     }
+
+    // Keep the existing frontend session mechanism for now.
+    signInDemoUser(data.email);
+
+    if (mode === "signup") {
+      toast.success("Account created successfully.");
+    } else {
+      toast.success("Login successful.");
+    }
+
+    navigate({ to: "/" });
+  } catch (err) {
+    toast.error(
+      err instanceof Error
+        ? err.message
+        : "Authentication failed"
+    );
+  } finally {
+    setBusy(false);
+  }
+}
+
+  async function onGoogle() {
     setBusy(true);
     try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email: parsed.data.email,
-          password: parsed.data.password,
-          options: { emailRedirectTo: window.location.origin },
-        });
-        if (error) throw error;
-        toast.success("Account created. You can start verifying claims.");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword(parsed.data);
-        if (error) throw error;
-      }
+      signInDemoUser("google-demo@claimbridge.local");
       navigate({ to: "/" });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Authentication failed");
     } finally {
       setBusy(false);
     }
-  }
-
-  async function onGoogle() {
-    setBusy(true);
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
-    });
-    if (result.error) {
-      setBusy(false);
-      toast.error("Google sign-in failed. Please try again.");
-      return;
-    }
-    if (result.redirected) return;
-    navigate({ to: "/" });
   }
 
   return (
@@ -120,6 +168,21 @@ function AuthPage() {
           </CardHeader>
           <CardContent className="space-y-5">
             <form onSubmit={onSubmit} className="space-y-4">
+            {mode === "signup" && (
+  <div className="space-y-2">
+    <Label htmlFor="fullName">Full Name</Label>
+    <Input
+      id="fullName"
+      type="text"
+      autoComplete="name"
+      value={fullName}
+      maxLength={150}
+      onChange={(e) => setFullName(e.target.value)}
+      placeholder="Enter your full name"
+      required
+    />
+  </div>
+)}
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -146,6 +209,22 @@ function AuthPage() {
                   required
                 />
               </div>
+
+              {mode === "signup" && (
+  <div className="space-y-2">
+    <Label htmlFor="confirmPassword">Confirm Password</Label>
+    <Input
+      id="confirmPassword"
+      type="password"
+      autoComplete="new-password"
+      value={confirmPassword}
+      maxLength={72}
+      onChange={(e) => setConfirmPassword(e.target.value)}
+      placeholder="Re-enter your password"
+      required
+    />
+  </div>
+)}
               <Button type="submit" className="w-full" disabled={busy || isRestoring}>
                 {busy ? <Loader2 className="size-4 animate-spin" /> : null}
                 {mode === "signin" ? "Sign in" : "Create account"}
