@@ -1,63 +1,105 @@
+import os
+
+os.environ["FLAGS_enable_pir_api"] = "0"
+
 import cv2
 import numpy as np
+from paddleocr import PaddleOCR
 
 
 def preprocess_image(image_path: str):
-    # 1. Read image
     image = cv2.imread(image_path)
 
     if image is None:
         raise ValueError("Unable to read image")
 
-    # 2. Resize image
     height, width = image.shape[:2]
-
     max_width = 1600
 
     if width > max_width:
         scale = max_width / width
         new_width = int(width * scale)
         new_height = int(height * scale)
-
         image = cv2.resize(
             image,
             (new_width, new_height),
-            interpolation=cv2.INTER_AREA
+            interpolation=cv2.INTER_AREA,
         )
 
-    # 3. Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # 4. Remove noise
     denoised = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # 5. Adaptive thresholding
     threshold = cv2.adaptiveThreshold(
         denoised,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
         11,
-        2
+        2,
     )
 
-    # 6. Morphological operation
     kernel = np.ones((2, 2), np.uint8)
+    return cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
 
-    processed = cv2.morphologyEx(
-        threshold,
-        cv2.MORPH_OPEN,
-        kernel
+
+def run_ocr(image_path: str):
+    ocr = PaddleOCR(lang="en", enable_mkldnn=False)
+    results = ocr.predict(image_path)
+
+    lines = []
+    all_scores = []
+
+    for result in results:
+        texts = result.get("rec_texts", [])
+        scores = result.get("rec_scores", [])
+
+        for text, score in zip(texts, scores):
+            text = text.strip()
+            if not text:
+                continue
+
+            score = float(score)
+            lines.append({
+                "text": text,
+                "confidence": round(score, 4),
+            })
+            all_scores.append(score)
+
+    average_confidence = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    full_text = "\n".join(line["text"] for line in lines)
+
+    return {
+        "text": full_text,
+        "confidence": round(average_confidence, 4),
+        "lines": lines,
+        "line_count": len(lines),
+    }
+
+
+def main():
+    backend_dir = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
     )
 
-    return processed
+    input_path = os.path.join(
+        backend_dir,
+        "test_images",
+        "sample_bill.jpg"
+    )
+
+    print("\nStarting PaddleOCR on ORIGINAL image...")
+
+    result = run_ocr(input_path)
+
+    print("\nOCR completed successfully.")
+    print("\nExtracted Text:")
+    print("--------------------------------")
+
+    print(result["text"])
+
+    print("--------------------------------")
+    print(f"OCR Confidence: {result['confidence'] * 100:.2f}%")
+    print(f"Detected Lines: {result['line_count']}")
+
 
 if __name__ == "__main__":
-    input_path = "test_images/sample_bill.jpg"
-
-    output = preprocess_image(input_path)
-
-    cv2.imwrite("test_images/preprocessed_bill.png", output)
-
-    print("Image preprocessing completed successfully.")
-    print("Output saved as preprocessed_bill.png")
+    main()
