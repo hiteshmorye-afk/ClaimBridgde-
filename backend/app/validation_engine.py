@@ -1,189 +1,238 @@
-from datetime import datetime
+from typing import Dict, Any
 
 
-def parse_date(value):
-    """Convert DD.MM.YYYY string into datetime."""
+# Fields that are essential for validating a hospital claim.
+# These fields should normally be available in a hospital bill.
+REQUIRED_FIELDS = [
+    "patient_name",
+    "external_id",
+    "admission_date",
+    "discharge_date",
+    "total_charges",
+]
 
-    if not value:
+
+# These fields may or may not be present depending on the
+# hospital's document format. Their absence should not make
+# an otherwise complete claim incomplete.
+DOCUMENT_DEPENDENT_FIELDS = [
+    "case_number",
+    "customer_number",
+    "billing_date",
+]
+
+
+EXPECTED_DATE_FORMAT = "%d.%m.%Y"
+
+
+def _validate_date_format(value: Any, field_name: str, mismatches: list):
+    """
+    Validate date format when a date value is present.
+    Expected format: DD.MM.YYYY
+    """
+    if value is None or value == "":
+        return
+
+    if not isinstance(value, str):
+        mismatches.append(
+            f"{field_name} must be a string in DD.MM.YYYY format"
+        )
+        return
+
+    parts = value.split(".")
+
+    if len(parts) != 3:
+        mismatches.append(
+            f"{field_name} has invalid date format: {value}"
+        )
+        return
+
+    day, month, year = parts
+
+    if (
+        len(day) != 2
+        or len(month) != 2
+        or len(year) != 4
+        or not day.isdigit()
+        or not month.isdigit()
+        or not year.isdigit()
+    ):
+        mismatches.append(
+            f"{field_name} has invalid date format: {value}"
+        )
+
+
+def _date_to_tuple(value: Any):
+    """
+    Convert DD.MM.YYYY into a comparable tuple.
+    Returns None when the value cannot be parsed.
+    """
+    if not isinstance(value, str):
+        return None
+
+    parts = value.split(".")
+
+    if len(parts) != 3:
         return None
 
     try:
-        return datetime.strptime(value, "%d.%m.%Y")
-
-    except (ValueError, TypeError):
+        day = int(parts[0])
+        month = int(parts[1])
+        year = int(parts[2])
+        return year, month, day
+    except ValueError:
         return None
 
 
-def validate_extracted_information(data: dict):
+def validate_extracted_information(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validate structured information extracted from a claim document.
 
-    This engine does NOT modify extracted data.
-    It only identifies missing fields, inconsistencies,
-    and risk indicators.
+    Validation is divided into:
+
+    1. Core required fields
+       These are necessary for basic claim validation.
+
+    2. Document-dependent fields
+       These may not exist on every hospital document and therefore
+       should not automatically make the claim incomplete.
+
+    The function also performs consistency and value checks.
     """
 
     missing_fields = []
+    optional_missing_fields = []
     mismatches = []
     risk_indicators = []
 
-    # -------------------------------------------------
-    # 1. REQUIRED FIELDS
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 1. Check core required fields
+    # ---------------------------------------------------------
 
-    required_fields = [
-        "patient_name",
-        "external_id",
-        "case_number",
-        "customer_number",
+    for field in REQUIRED_FIELDS:
+        value = extracted_data.get(field)
+
+        if value is None or value == "":
+            missing_fields.append(field)
+
+    # ---------------------------------------------------------
+    # 2. Check document-dependent fields separately
+    # ---------------------------------------------------------
+
+    for field in DOCUMENT_DEPENDENT_FIELDS:
+        value = extracted_data.get(field)
+
+        if value is None or value == "":
+            optional_missing_fields.append(field)
+
+    # ---------------------------------------------------------
+    # 3. Validate date formats
+    # ---------------------------------------------------------
+
+    date_fields = [
         "admission_date",
         "discharge_date",
         "billing_date",
-        "total_charges",
     ]
 
-    for field in required_fields:
+    for field in date_fields:
+        _validate_date_format(
+            extracted_data.get(field),
+            field,
+            mismatches,
+        )
 
-        value = data.get(field)
+    # ---------------------------------------------------------
+    # 4. Validate admission and discharge date consistency
+    # ---------------------------------------------------------
 
-        if value is None or str(value).strip() == "":
-            missing_fields.append(field)
-
-    # -------------------------------------------------
-    # 2. DATE VALIDATION
-    # -------------------------------------------------
-
-    admission_date = parse_date(
-        data.get("admission_date")
+    admission_date = _date_to_tuple(
+        extracted_data.get("admission_date")
     )
 
-    discharge_date = parse_date(
-        data.get("discharge_date")
+    discharge_date = _date_to_tuple(
+        extracted_data.get("discharge_date")
     )
 
-    billing_date = parse_date(
-        data.get("billing_date")
+    billing_date = _date_to_tuple(
+        extracted_data.get("billing_date")
     )
-
-    # Invalid date format
-    for field, value in [
-        ("admission_date", admission_date),
-        ("discharge_date", discharge_date),
-        ("billing_date", billing_date),
-    ]:
-
-        original_value = data.get(field)
-
-        if original_value and value is None:
-
-            mismatches.append({
-                "field": field,
-                "issue": "Invalid date format",
-                "value": original_value,
-            })
-
-    # -------------------------------------------------
-    # 3. DATE CONSISTENCY
-    # -------------------------------------------------
 
     if admission_date and discharge_date:
-
         if admission_date > discharge_date:
-
-            mismatches.append({
-                "field": "admission_date / discharge_date",
-                "issue": "Admission date occurs after discharge date",
-                "admission_date": data.get("admission_date"),
-                "discharge_date": data.get("discharge_date"),
-            })
-
-            risk_indicators.append(
-                "Invalid hospitalization date sequence"
+            mismatches.append(
+                "Admission date cannot be later than discharge date"
             )
+            risk_indicators.append(
+                "Invalid admission/discharge date sequence"
+            )
+
+    # ---------------------------------------------------------
+    # 5. Validate billing date when available
+    # ---------------------------------------------------------
 
     if discharge_date and billing_date:
-
         if discharge_date > billing_date:
-
-            mismatches.append({
-                "field": "discharge_date / billing_date",
-                "issue": "Billing date occurs before discharge date",
-                "discharge_date": data.get("discharge_date"),
-                "billing_date": data.get("billing_date"),
-            })
-
+            mismatches.append(
+                "Billing date cannot be earlier than discharge date"
+            )
             risk_indicators.append(
-                "Billing date inconsistency"
+                "Billing date occurs before discharge date"
             )
 
-    # -------------------------------------------------
-    # 4. AMOUNT VALIDATION
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 6. Validate total charges
+    # ---------------------------------------------------------
 
-    total_charges = data.get("total_charges")
+    total_charges = extracted_data.get("total_charges")
 
-    if total_charges is not None:
-
+    if total_charges is not None and total_charges != "":
         try:
             amount = float(total_charges)
 
-            if amount < 0:
-
-                mismatches.append({
-                    "field": "total_charges",
-                    "issue": "Negative claim amount",
-                    "value": total_charges,
-                })
-
+            if amount <= 0:
+                mismatches.append(
+                    "Total charges must be greater than zero"
+                )
                 risk_indicators.append(
-                    "Invalid financial amount"
+                    "Invalid total charges amount"
                 )
 
-            elif amount == 0:
+        except (TypeError, ValueError):
+            mismatches.append(
+                "Total charges must be a valid numeric value"
+            )
+            risk_indicators.append(
+                "Invalid total charges format"
+            )
 
-                risk_indicators.append(
-                    "Zero claim amount"
-                )
+    # ---------------------------------------------------------
+    # 7. Validate external ID
+    # ---------------------------------------------------------
 
-        except (ValueError, TypeError):
+    external_id = extracted_data.get("external_id")
 
-            mismatches.append({
-                "field": "total_charges",
-                "issue": "Invalid numeric amount",
-                "value": total_charges,
-            })
-
-    # -------------------------------------------------
-    # 5. ID FORMAT VALIDATION
-    # -------------------------------------------------
-
-    external_id = data.get("external_id")
-
-    if external_id:
-
+    if external_id is not None and external_id != "":
         if not isinstance(external_id, str):
+            mismatches.append(
+                "External ID must be stored as a string"
+            )
 
-            mismatches.append({
-                "field": "external_id",
-                "issue": "Invalid external ID format",
-                "value": external_id,
-            })
+    # ---------------------------------------------------------
+    # 8. Validate customer number only when present
+    # ---------------------------------------------------------
 
-    customer_number = data.get("customer_number")
+    customer_number = extracted_data.get("customer_number")
 
-    if customer_number:
-
+    if customer_number is not None and customer_number != "":
         if not str(customer_number).isdigit():
+            mismatches.append(
+                "Customer number must contain only digits"
+            )
 
-            mismatches.append({
-                "field": "customer_number",
-                "issue": "Customer number contains invalid characters",
-                "value": customer_number,
-            })
-
-    # -------------------------------------------------
-    # 6. OVERALL STATUS
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 9. Determine verification status
+    # ---------------------------------------------------------
 
     if mismatches:
         verification_status = "Needs Review"
@@ -194,119 +243,82 @@ def validate_extracted_information(data: dict):
     else:
         verification_status = "Validated"
 
-    # -------------------------------------------------
-    # 7. READINESS SCORE
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 10. Calculate validation readiness score
+    #
+    # Only core required fields affect completeness.
+    # Optional/document-dependent fields do not reduce the score.
+    # ---------------------------------------------------------
 
-    total_required = len(required_fields)
-    missing_count = len(missing_fields)
+    total_required = len(REQUIRED_FIELDS)
+    present_required = total_required - len(missing_fields)
 
-    completeness_score = (
-        (total_required - missing_count)
-        / total_required
-    ) * 100
+    if total_required > 0:
+        completeness_score = (
+            present_required / total_required
+        ) * 100
+    else:
+        completeness_score = 100.0
 
-    # Penalize consistency problems
-    mismatch_penalty = min(
-        len(mismatches) * 10,
-        40
-    )
+    # Apply mismatch penalty.
+    # Preserve the previous concept of a maximum 40-point penalty.
+    mismatch_penalty = min(len(mismatches) * 10, 40)
 
     readiness_score = max(
-        0,
+        0.0,
         completeness_score - mismatch_penalty
     )
 
-    # -------------------------------------------------
-    # 8. SUMMARY
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 11. Add informational risk indicator for optional fields
+    #
+    # These do not reduce the validation score.
+    # ---------------------------------------------------------
 
-    if verification_status == "Validated":
-
-        summary = (
-            "All required extracted fields are present "
-            "and passed basic consistency validation."
+    if optional_missing_fields:
+        risk_indicators.append(
+            "Document-dependent fields not present: "
+            + ", ".join(optional_missing_fields)
         )
 
-    elif verification_status == "Incomplete":
+    # ---------------------------------------------------------
+    # 12. Verification summary
+    # ---------------------------------------------------------
 
-        summary = (
-            "Required information is missing from the "
-            "extracted document and requires review."
+    if verification_status == "Validated":
+        if optional_missing_fields:
+            verification_summary = (
+                "All core claim fields required for validation "
+                "are present and consistent. Some document-dependent "
+                "fields are not available in the submitted document."
+            )
+        else:
+            verification_summary = (
+                "All required claim fields are present and consistent."
+            )
+
+    elif verification_status == "Incomplete":
+        verification_summary = (
+            "One or more core claim fields required for validation "
+            "are missing."
         )
 
     else:
-
-        summary = (
-            "The extracted document contains consistency "
-            "issues that require review."
+        verification_summary = (
+            "Validation inconsistencies were detected and the claim "
+            "requires review."
         )
 
-    # -------------------------------------------------
-    # 9. FINAL VALIDATION RESULT
-    # -------------------------------------------------
+    # ---------------------------------------------------------
+    # 13. Final validation result
+    # ---------------------------------------------------------
 
     return {
         "verification_status": verification_status,
         "readiness_score": round(readiness_score, 2),
         "missing_fields": missing_fields,
+        "optional_missing_fields": optional_missing_fields,
         "mismatches": mismatches,
         "risk_indicators": risk_indicators,
-        "verification_summary": summary,
+        "verification_summary": verification_summary,
     }
-
-
-# =====================================================
-# LOCAL TEST
-# =====================================================
-
-if __name__ == "__main__":
-
-    sample_data = {
-        "hospital_name": "KK Women's and Children's Hospital",
-        "patient_name": "VERCELLA VERONICA",
-        "external_id": "X0724956604F",
-        "case_number": "3024956604",
-        "customer_number": "76100506511",
-        "admission_date": "17.08.2010",
-        "discharge_date": "24.08.2010",
-        "billing_date": "24.08.2010",
-        "total_charges": 11636.41,
-    }
-
-    result = validate_extracted_information(
-        sample_data
-    )
-
-    print("\nValidation Result")
-    print("=" * 50)
-
-    print(
-        f"Status: "
-        f"{result['verification_status']}"
-    )
-
-    print(
-        f"Readiness Score: "
-        f"{result['readiness_score']}"
-    )
-
-    print(
-        f"Missing Fields: "
-        f"{result['missing_fields']}"
-    )
-
-    print(
-        f"Mismatches: "
-        f"{result['mismatches']}"
-    )
-
-    print(
-        f"Risk Indicators: "
-        f"{result['risk_indicators']}"
-    )
-
-    print(
-        f"Summary: "
-        f"{result['verification_summary']}"
-    )

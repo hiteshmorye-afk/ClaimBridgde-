@@ -1,334 +1,585 @@
+"""
+ClaimBridge Information Extraction
+
+Extracts structured claim information from OCR text.
+
+The extractor is designed to handle variations commonly
+found in hospital bills and claim documents.
+"""
+
 import re
 from datetime import datetime
+from typing import Any, Dict
 
 
-def extract_information(text: str):
-    """
-    Extract structured information from OCR text.
+# =========================================================
+# TEXT NORMALIZATION
+# =========================================================
 
-    Handles:
-    - Same-line OCR fields
-    - Next-line OCR fields
-    - OCR reading-order issues
-    - Date consistency
-    - Hospital bill information
-    """
+def normalize_text(text: str) -> str:
+    """Normalize OCR text while preserving line structure."""
 
-    if not text or not text.strip():
-        return {}
+    if not text:
+        return ""
 
-    # -------------------------------------------------
-    # 1. NORMALIZE OCR TEXT
-    # -------------------------------------------------
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
 
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
+    # Normalize spaces but preserve newlines.
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
 
-    lines = [
+    return text.strip()
+
+
+def get_lines(text: str) -> list[str]:
+    """Return cleaned non-empty OCR lines."""
+
+    return [
         line.strip()
-        for line in text.split("\n")
+        for line in normalize_text(text).split("\n")
         if line.strip()
     ]
 
-    # -------------------------------------------------
-    # 2. RESULT STRUCTURE
-    # -------------------------------------------------
 
-    result = {
-        "hospital_name": None,
-        "patient_name": None,
-        "external_id": None,
-        "case_number": None,
-        "customer_number": None,
-        "admission_date": None,
-        "discharge_date": None,
-        "billing_date": None,
-        "total_charges": None,
-    }
+# =========================================================
+# HOSPITAL NAME
+# =========================================================
 
-    # -------------------------------------------------
-    # 3. HOSPITAL NAME
-    # -------------------------------------------------
+def extract_hospital_name(text: str) -> str | None:
+    """
+    Extract hospital name.
 
-    hospital_patterns = [
-        "KK Women's and Children's Hospital",
-        "KK Women's & Children's Hospital",
-        "Children's Hospital",
-    ]
+    Handles:
+    - Hospital name followed by Hospital
+    - Common OCR capitalization variations
+    """
 
-    for hospital in hospital_patterns:
-        if hospital.lower() in text.lower():
-            result["hospital_name"] = hospital
-            break
+    lines = get_lines(text)
 
-    # -------------------------------------------------
-    # 4. PATIENT NAME
-    # -------------------------------------------------
+    for line in lines:
 
-    patient_match = re.search(
-        r"Patient\s*:?\s*([A-Za-z][A-Za-z .'-]+)",
-        text,
-        re.IGNORECASE
-    )
+        normalized = line.strip()
 
-    if patient_match:
-        result["patient_name"] = patient_match.group(1).strip()
-
-    # -------------------------------------------------
-    # 5. EXTERNAL ID / NRIC
-    #
-    # Example:
-    # X0724956604F
-    # -------------------------------------------------
-
-    external_match = re.search(
-        r"\bX\d{10}[A-Z]\b",
-        text,
-        re.IGNORECASE
-    )
-
-    if external_match:
-        result["external_id"] = external_match.group(0).upper()
-
-    # -------------------------------------------------
-    # 6. CUSTOMER NUMBER
-    #
-    # Example:
-    # 76100506511
-    # -------------------------------------------------
-
-    customer_match = re.search(
-        r"\b\d{11}\b",
-        text
-    )
-
-    if customer_match:
-        result["customer_number"] = customer_match.group(0)
-
-    # -------------------------------------------------
-    # 7. CASE NUMBER
-    #
-    # Example:
-    # 3024956604
-    # -------------------------------------------------
-
-    case_numbers = re.findall(
-        r"\b\d{10}\b",
-        text
-    )
-
-    if case_numbers:
-        result["case_number"] = case_numbers[0]
-
-    # -------------------------------------------------
-    # 8. FIND ALL DATES
-    # -------------------------------------------------
-
-    date_matches = re.findall(
-        r"\b\d{2}\.\d{2}\.\d{4}\b",
-        text
-    )
-
-    # Remove duplicates while preserving order
-    unique_dates = []
-
-    for date in date_matches:
-        if date not in unique_dates:
-            unique_dates.append(date)
-
-    # -------------------------------------------------
-    # 9. ADMISSION DATE
-    # -------------------------------------------------
-
-    admission_match = re.search(
-        r"Admission date\s*:?\s*(\d{2}\.\d{2}\.\d{4})",
-        text,
-        re.IGNORECASE
-    )
-
-    if admission_match:
-        result["admission_date"] = admission_match.group(1)
-
-    # -------------------------------------------------
-    # 10. DISCHARGE DATE
-    # -------------------------------------------------
-
-    discharge_match = re.search(
-        r"Discharge date\s*:?\s*(\d{2}\.\d{2}\.\d{4})",
-        text,
-        re.IGNORECASE
-    )
-
-    if discharge_match:
-        result["discharge_date"] = discharge_match.group(1)
-
-    # -------------------------------------------------
-    # 11. BILLING DATE
-    # -------------------------------------------------
-
-    billing_match = re.search(
-        r"Billing date\s*:?\s*(\d{2}\.\d{2}\.\d{4})",
-        text,
-        re.IGNORECASE
-    )
-
-    if billing_match:
-        result["billing_date"] = billing_match.group(1)
-
-    # -------------------------------------------------
-    # 12. DATE FALLBACK / OCR LAYOUT RECOVERY
-    # -------------------------------------------------
-
-    parsed_dates = []
-
-    for date in unique_dates:
-        try:
-            parsed_date = datetime.strptime(
-                date,
-                "%d.%m.%Y"
-            )
-
-            parsed_dates.append(
-                (parsed_date, date)
-            )
-
-        except ValueError:
-            pass
-
-    parsed_dates.sort()
-
-    # If admission date is missing,
-    # use the earliest detected date.
-    if not result["admission_date"] and parsed_dates:
-        result["admission_date"] = parsed_dates[0][1]
-
-    # If discharge date is missing,
-    # use the latest date available.
-    if not result["discharge_date"] and parsed_dates:
-        result["discharge_date"] = parsed_dates[-1][1]
-
-    # -------------------------------------------------
-    # 13. TOTAL CHARGES
-    # -------------------------------------------------
-
-    total_match = re.search(
-        r"Total charges\s*:?\s*([\d,]+\.\d{2})",
-        text,
-        re.IGNORECASE
-    )
-
-    if total_match:
-
-        result["total_charges"] = float(
-            total_match.group(1).replace(",", "")
+        # Common explicit hospital-name pattern.
+        match = re.search(
+            r"^(.+?\bHospital)\b",
+            normalized,
+            flags=re.IGNORECASE,
         )
 
-    else:
+        if match:
+            return match.group(1).strip()
 
-        # OCR may put amount on next line
-        for index, line in enumerate(lines):
+    # Fallback for known hospital wording.
+    for line in lines:
 
-            if "total charges" in line.lower():
+        if "hospital" in line.lower():
+            return line.strip()
 
-                if index + 1 < len(lines):
+    return None
 
-                    amount_match = re.search(
-                        r"([\d,]+\.\d{2})",
-                        lines[index + 1]
-                    )
 
-                    if amount_match:
+# =========================================================
+# PATIENT NAME
+# =========================================================
 
-                        result["total_charges"] = float(
-                            amount_match.group(1).replace(",", "")
-                        )
+def extract_patient_name(text: str) -> str | None:
+    """Extract patient name from the Patient Name field."""
 
-                break
+    patterns = [
+        r"Patient\s+Name\s*:\s*(.+)",
+        r"Patient\s+Name\s*-\s*(.+)",
+    ]
 
-    # -------------------------------------------------
-    # 14. FINAL DATE CONSISTENCY CHECK
-    # -------------------------------------------------
+    normalized_text = normalize_text(text)
 
-    def parse_date(value):
+    for pattern in patterns:
 
-        if not value:
-            return None
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            value = match.group(1).strip()
+
+            if value:
+                return value
+
+    return None
+
+
+# =========================================================
+# PATIENT / EXTERNAL ID
+# =========================================================
+
+def extract_external_id(text: str) -> str | None:
+    """
+    Extract an external patient identifier.
+
+    Supported examples:
+    - External ID: X1234567890A
+    - Patient No.: 968945993
+
+    Patient number is used as the external identifier when
+    an explicit external ID is not available.
+    """
+
+    normalized_text = normalize_text(text)
+
+    # Explicit external ID.
+    patterns = [
+        r"External\s+ID\s*:\s*([A-Za-z0-9\-]+)",
+        r"External\s+ID\s*-\s*([A-Za-z0-9\-]+)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+    # Hospital patient number.
+    patterns = [
+        r"Patient\s+No\.?\s*:\s*([A-Za-z0-9\-]+)",
+        r"Patient\s+Number\s*:\s*([A-Za-z0-9\-]+)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+    return None
+
+
+# =========================================================
+# CASE NUMBER
+# =========================================================
+
+def extract_case_number(text: str) -> str | None:
+    """Extract an explicitly labelled case number."""
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"Case\s+No\.?\s*:\s*([A-Za-z0-9\-]+)",
+        r"Case\s+Number\s*:\s*([A-Za-z0-9\-]+)",
+        r"Case\s*#\s*:\s*([A-Za-z0-9\-]+)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+    return None
+
+
+# =========================================================
+# CUSTOMER NUMBER
+# =========================================================
+
+def extract_customer_number(text: str) -> str | None:
+    """Extract an explicitly labelled customer number."""
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"Customer\s+No\.?\s*:\s*([A-Za-z0-9\-]+)",
+        r"Customer\s+Number\s*:\s*([A-Za-z0-9\-]+)",
+        r"Customer\s*#\s*:\s*([A-Za-z0-9\-]+)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+    return None
+
+
+# =========================================================
+# DATE PARSING
+# =========================================================
+
+MONTHS = {
+    "JAN": 1,
+    "JANUARY": 1,
+    "FEB": 2,
+    "FEBRUARY": 2,
+    "MAR": 3,
+    "MARCH": 3,
+    "APR": 4,
+    "APRIL": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUNE": 6,
+    "JUL": 7,
+    "JULY": 7,
+    "AUG": 8,
+    "AUGUST": 8,
+    "SEP": 9,
+    "SEPT": 9,
+    "SEPTEMBER": 9,
+    "OCT": 10,
+    "OCTOBER": 10,
+    "NOV": 11,
+    "NOVEMBER": 11,
+    "DEC": 12,
+    "DECEMBER": 12,
+}
+
+
+def normalize_date(
+    date_text: str,
+) -> str | None:
+    """
+    Convert supported date formats to DD.MM.YYYY.
+
+    Examples:
+    MAY 16, 2019 -> 16.05.2019
+    16.05.2019   -> 16.05.2019
+    """
+
+    if not date_text:
+        return None
+
+    value = date_text.strip()
+
+    # Numeric format.
+    numeric_match = re.fullmatch(
+        r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})",
+        value,
+    )
+
+    if numeric_match:
+
+        day = int(numeric_match.group(1))
+        month = int(numeric_match.group(2))
+        year = int(numeric_match.group(3))
 
         try:
-            return datetime.strptime(
-                value,
+
+            date_value = datetime(
+                year,
+                month,
+                day,
+            )
+
+            return date_value.strftime(
                 "%d.%m.%Y"
             )
 
         except ValueError:
+
             return None
 
-    admission_dt = parse_date(
-        result["admission_date"]
+    # Month-name format.
+    month_match = re.fullmatch(
+        r"([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})",
+        value,
     )
 
-    discharge_dt = parse_date(
-        result["discharge_date"]
+    if month_match:
+
+        month_name = month_match.group(1).upper()
+        day = int(month_match.group(2))
+        year = int(month_match.group(3))
+
+        month = MONTHS.get(
+            month_name
+        )
+
+        if month is None:
+            return None
+
+        try:
+
+            date_value = datetime(
+                year,
+                month,
+                day,
+            )
+
+            return date_value.strftime(
+                "%d.%m.%Y"
+            )
+
+        except ValueError:
+
+            return None
+
+    return None
+
+
+# =========================================================
+# ADMISSION DATE
+# =========================================================
+
+def extract_admission_date(
+    text: str,
+) -> str | None:
+    """Extract explicitly labelled admission date."""
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"Date\s+admitted\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+        r"Admission\s+Date\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            return normalize_date(
+                match.group(1).strip()
+            )
+
+    return None
+
+
+# =========================================================
+# DISCHARGE DATE
+# =========================================================
+
+def extract_discharge_date(
+    text: str,
+) -> str | None:
+    """Extract explicitly labelled discharge date."""
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"Date\s+discharge\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+        r"Date\s+discharged\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+        r"Discharge\s+Date\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            return normalize_date(
+                match.group(1).strip()
+            )
+
+    return None
+
+
+# =========================================================
+# BILLING DATE
+# =========================================================
+
+def extract_billing_date(
+    text: str,
+) -> str | None:
+    """Extract an explicitly labelled billing date."""
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"Billing\s+Date\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+        r"Bill\s+Date\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+        r"Date\s+of\s+Billing\s*:\s*([A-Za-z0-9.,/\- ]+?)(?=\s+TIME\b|\n|$)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            return normalize_date(
+                match.group(1).strip()
+            )
+
+    return None
+
+
+# =========================================================
+# TOTAL CHARGES
+# =========================================================
+
+def extract_total_charges(
+    text: str,
+) -> float | None:
+    """
+    Extract the final hospital bill amount.
+
+    Supports:
+    AMOUNT DUE - HOSPITAL BILL
+    TOTAL CHARGES
+    TOTAL AMOUNT
+    """
+
+    normalized_text = normalize_text(text)
+
+    patterns = [
+        r"AMOUNT\s+DUE\s*-\s*HOSPITAL\s+BILL\s*\n?\s*([\d,]+\.\d{2})",
+        r"AMOUNT\s+DUE\s*[:\-]?\s*([\d,]+\.\d{2})",
+        r"TOTAL\s+CHARGES\s*[:\-]?\s*([\d,]+\.\d{2})",
+        r"TOTAL\s+AMOUNT\s*[:\-]?\s*([\d,]+\.\d{2})",
+        r"TOTAL\s*[:\-]\s*([\d,]+\.\d{2})",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            normalized_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+
+            value = match.group(1)
+
+            value = value.replace(
+                ",",
+                "",
+            )
+
+            try:
+
+                return float(value)
+
+            except ValueError:
+
+                return None
+
+    return None
+
+
+# =========================================================
+# MAIN EXTRACTION FUNCTION
+# =========================================================
+
+def extract_information(
+    text: str,
+) -> Dict[str, Any]:
+    """
+    Extract structured information from OCR text.
+    """
+
+    normalized_text = normalize_text(
+        text
     )
 
-    billing_dt = parse_date(
-        result["billing_date"]
-    )
+    return {
+        "hospital_name": extract_hospital_name(
+            normalized_text
+        ),
 
-    # If OCR assigned admission date to discharge
-    # but billing date is later, correct discharge.
-    if (
-        admission_dt
-        and discharge_dt
-        and billing_dt
-        and discharge_dt == admission_dt
-        and billing_dt > admission_dt
-    ):
-        result["discharge_date"] = result["billing_date"]
+        "patient_name": extract_patient_name(
+            normalized_text
+        ),
 
-    # -------------------------------------------------
-    # 15. FINAL RESULT
-    # -------------------------------------------------
+        "external_id": extract_external_id(
+            normalized_text
+        ),
 
-    return result
+        "case_number": extract_case_number(
+            normalized_text
+        ),
+
+        "customer_number": extract_customer_number(
+            normalized_text
+        ),
+
+        "admission_date": extract_admission_date(
+            normalized_text
+        ),
+
+        "discharge_date": extract_discharge_date(
+            normalized_text
+        ),
+
+        "billing_date": extract_billing_date(
+            normalized_text
+        ),
+
+        "total_charges": extract_total_charges(
+            normalized_text
+        ),
+    }
 
 
-# =====================================================
-# LOCAL TEST
-# =====================================================
+# =========================================================
+# MODULE TEST
+# =========================================================
 
 if __name__ == "__main__":
 
     sample_text = """
-    KK Women's and Children's Hospital
-    TAX INVOICE
-
-    Patient : VERCELLA VERONICA
-
-    External ID/NRIC
-    Case number
-    : X0724956604F
-
-    Customer number
-    : 76100506511
-
-    Admission date
-    : 3024956604
-
-    Discharge date
-    : 17.08.2010
-
-    Billing date
-    : 24.08.2010
-
-    Total charges
-    11,636.41
+    Chong Hua Hospital
+    STATEMENT OF ACCOUNT
+    Patient No. : 968945993
+    Patient Name: Mrs. Tuhod
+    Date admitted: MAY 16, 2019
+    TIME: 7:00AM
+    Date discharge: MAY 19, 2019
+    TIME: 2:00PM
+    AMOUNT DUE - HOSPITAL BILL
+    184,000.00
     """
 
-    result = extract_information(sample_text)
+    result = extract_information(
+        sample_text
+    )
 
-    print("\nInformation Extraction Result")
-    print("--------------------------------")
+    print("\n" + "=" * 60)
+    print("CLAIMBRIDGE INFORMATION EXTRACTION")
+    print("=" * 60)
 
     for key, value in result.items():
-        print(f"{key}: {value}")
+
+        print(
+            f"{key}: {value}"
+        )

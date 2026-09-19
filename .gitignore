@@ -32,6 +32,8 @@ dist-ssr
 *.sw?
 
 # ClaimBridge backend
+.venv/
+.venv-1/
 backend/venv/
 backend/.env
 backend/test_images/
