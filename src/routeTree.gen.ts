@@ -10,18 +10,67 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AiAnalysisRouteImport } from './routes/ai-analysis'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as DocumentsRouteImport } from './routes/documents'
+import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as ReviewRouteImport } from './routes/review'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as TpaIntegrationRouteImport } from './routes/tpa-integration'
+import { Route as ClaimsIndexRouteImport } from './routes/claims.index'
 import { Route as ClaimsClaimIdRouteImport } from './routes/claims.$claimId'
 import { Route as ClaimsNewRouteImport } from './routes/claims.new'
+import { Route as IndexBackupRouteImport } from './routes/index.backup'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AiAnalysisRoute = AiAnalysisRouteImport.update({
+  id: '/ai-analysis',
+  path: '/ai-analysis',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocumentsRoute = DocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReportsRoute = ReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReviewRoute = ReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TpaIntegrationRoute = TpaIntegrationRouteImport.update({
+  id: '/tpa-integration',
+  path: '/tpa-integration',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClaimsIndexRoute = ClaimsIndexRouteImport.update({
+  id: '/claims/',
+  path: '/claims/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ClaimsClaimIdRoute = ClaimsClaimIdRouteImport.update({
@@ -34,39 +83,120 @@ const ClaimsNewRoute = ClaimsNewRouteImport.update({
   path: '/claims/new',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IndexBackupRoute = IndexBackupRouteImport.update({
+  id: '/index/backup',
+  path: '/index/backup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ai-analysis': typeof AiAnalysisRoute
+  '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/documents': typeof DocumentsRoute
+  '/reports': typeof ReportsRoute
+  '/review': typeof ReviewRoute
+  '/settings': typeof SettingsRoute
+  '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
+  '/index/backup': typeof IndexBackupRoute
+  '/claims/': typeof ClaimsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ai-analysis': typeof AiAnalysisRoute
+  '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/documents': typeof DocumentsRoute
+  '/reports': typeof ReportsRoute
+  '/review': typeof ReviewRoute
+  '/settings': typeof SettingsRoute
+  '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
+  '/index/backup': typeof IndexBackupRoute
+  '/claims': typeof ClaimsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ai-analysis': typeof AiAnalysisRoute
+  '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/documents': typeof DocumentsRoute
+  '/reports': typeof ReportsRoute
+  '/review': typeof ReviewRoute
+  '/settings': typeof SettingsRoute
+  '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
+  '/index/backup': typeof IndexBackupRoute
+  '/claims/': typeof ClaimsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/claims/$claimId' | '/claims/new'
+  fullPaths:
+    | '/'
+    | '/ai-analysis'
+    | '/analytics'
+    | '/auth'
+    | '/documents'
+    | '/reports'
+    | '/review'
+    | '/settings'
+    | '/tpa-integration'
+    | '/claims/$claimId'
+    | '/claims/new'
+    | '/index/backup'
+    | '/claims/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/claims/$claimId' | '/claims/new'
-  id: '__root__' | '/' | '/auth' | '/claims/$claimId' | '/claims/new'
+  to:
+    | '/'
+    | '/ai-analysis'
+    | '/analytics'
+    | '/auth'
+    | '/documents'
+    | '/reports'
+    | '/review'
+    | '/settings'
+    | '/tpa-integration'
+    | '/claims/$claimId'
+    | '/claims/new'
+    | '/index/backup'
+    | '/claims'
+  id:
+    | '__root__'
+    | '/'
+    | '/ai-analysis'
+    | '/analytics'
+    | '/auth'
+    | '/documents'
+    | '/reports'
+    | '/review'
+    | '/settings'
+    | '/tpa-integration'
+    | '/claims/$claimId'
+    | '/claims/new'
+    | '/index/backup'
+    | '/claims/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AiAnalysisRoute: typeof AiAnalysisRoute
+  AnalyticsRoute: typeof AnalyticsRoute
   AuthRoute: typeof AuthRoute
+  DocumentsRoute: typeof DocumentsRoute
+  ReportsRoute: typeof ReportsRoute
+  ReviewRoute: typeof ReviewRoute
+  SettingsRoute: typeof SettingsRoute
+  TpaIntegrationRoute: typeof TpaIntegrationRoute
   ClaimsClaimIdRoute: typeof ClaimsClaimIdRoute
   ClaimsNewRoute: typeof ClaimsNewRoute
+  IndexBackupRoute: typeof IndexBackupRoute
+  ClaimsIndexRoute: typeof ClaimsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -78,11 +208,67 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ai-analysis': {
+      id: '/ai-analysis'
+      path: '/ai-analysis'
+      fullPath: '/ai-analysis'
+      preLoaderRoute: typeof AiAnalysisRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth': {
       id: '/auth'
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/documents': {
+      id: '/documents'
+      path: '/documents'
+      fullPath: '/documents'
+      preLoaderRoute: typeof DocumentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reports': {
+      id: '/reports'
+      path: '/reports'
+      fullPath: '/reports'
+      preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/review': {
+      id: '/review'
+      path: '/review'
+      fullPath: '/review'
+      preLoaderRoute: typeof ReviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tpa-integration': {
+      id: '/tpa-integration'
+      path: '/tpa-integration'
+      fullPath: '/tpa-integration'
+      preLoaderRoute: typeof TpaIntegrationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/claims/': {
+      id: '/claims/'
+      path: '/claims'
+      fullPath: '/claims/'
+      preLoaderRoute: typeof ClaimsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/claims/$claimId': {
@@ -99,14 +285,30 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ClaimsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/index/backup': {
+      id: '/index/backup'
+      path: '/index/backup'
+      fullPath: '/index/backup'
+      preLoaderRoute: typeof IndexBackupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AiAnalysisRoute: AiAnalysisRoute,
+  AnalyticsRoute: AnalyticsRoute,
   AuthRoute: AuthRoute,
+  DocumentsRoute: DocumentsRoute,
+  ReportsRoute: ReportsRoute,
+  ReviewRoute: ReviewRoute,
+  SettingsRoute: SettingsRoute,
+  TpaIntegrationRoute: TpaIntegrationRoute,
   ClaimsClaimIdRoute: ClaimsClaimIdRoute,
   ClaimsNewRoute: ClaimsNewRoute,
+  IndexBackupRoute: IndexBackupRoute,
+  ClaimsIndexRoute: ClaimsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

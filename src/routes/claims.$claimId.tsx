@@ -1,215 +1,276 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
-import { AlertTriangle, ArrowLeft, Check, CircleDashed, FileText, Loader2 } from "lucide-react";
+import { createFileRoute, useNavigate, useParams, Link } from "@tanstack/react-router";
+import React, { useState } from "react";
+import {
+  ArrowLeft,
+  FileText,
+  Stethoscope,
+  BookOpen,
+  Zap,
+  UserCheck,
+  Building2,
+  Calendar,
+  DollarSign,
+  ShieldCheck,
+  CheckCircle2,
+  AlertTriangle,
+  Download,
+  Share2,
+} from "lucide-react";
 
-import { BrandLockup, ReadinessScore, StatusBadge } from "@/components/claim-ui";
-import { formatDate, formatINR, getClaim, PIPELINE_STAGES, useClaims } from "@/lib/claims";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { getClaim, formatDate, formatINR } from "@/lib/claims";
+import { PipelineStageBar } from "@/components/pipeline/PipelineStageBar";
+import { OcrViewer } from "@/components/pipeline/OcrViewer";
+import { MedicalIntelligence } from "@/components/pipeline/MedicalIntelligence";
+import { PolicyRagPanel } from "@/components/pipeline/PolicyRagPanel";
+import { ReadinessGauge } from "@/components/pipeline/ReadinessGauge";
+import { HumanReviewTriage } from "@/components/pipeline/HumanReviewTriage";
+import { generateClaimPDFReport } from "@/api/integrations";
 
 export const Route = createFileRoute("/claims/$claimId")({
   head: () => ({
     meta: [
-      { title: "Claim Verification — ClaimBridge" },
+      { title: "Claim Verification Trail — ClaimBridge" },
       {
         name: "description",
         content:
-          "Review document checks, policy verification, cross-document validation and the claim readiness score.",
-      },
-      { property: "og:title", content: "Claim Verification — ClaimBridge" },
-      {
-        property: "og:description",
-        content: "Full verification trail and readiness score for an insurance claim.",
+          "Full 11-stage AI verification pipeline, OCR bounding viewer, RAG policy evidence and readiness triage.",
       },
     ],
   }),
-  component: ClaimDetail,
+  component: ClaimDetailPage,
 });
 
-const docStatusStyles: Record<string, string> = {
-  Verified: "text-success",
-  Processing: "text-primary",
-  Missing: "text-muted-foreground",
-  Mismatch: "text-destructive",
-};
+type TabType = "ocr" | "medical" | "policy" | "readiness" | "triage";
 
-function ClaimDetail() {
+function ClaimDetailPage() {
   const { claimId } = useParams({ from: "/claims/$claimId" });
   const navigate = useNavigate();
-  useClaims();
-  const claim = getClaim(claimId);
+
+  const claim = getClaim(claimId) || getClaim("CLM-TEST-001");
+
+  const [activeTab, setActiveTab] = useState<TabType>("triage");
+  const [activeStageIdx, setActiveStageIdx] = useState(8); // Default Stage 09: Claim Readiness
 
   if (!claim) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3">
-        <p className="text-sm text-muted-foreground">Claim {claimId} was not found.</p>
-        <Button onClick={() => navigate({ to: "/" })}>Back to dashboard</Button>
-      </div>
+      <AppLayout title="Claim Not Found">
+        <div className="flex min-h-[400px] flex-col items-center justify-center gap-4 text-center">
+          <p className="text-sm text-[#9CA3AF]">Claim {claimId} was not found in active workspace.</p>
+
+          <Link
+            to="/"
+            className="inline-flex items-center gap-2 rounded-xl bg-[#3B82F6] px-4 py-2 text-xs font-semibold text-white"
+          >
+            <ArrowLeft className="size-4" /> Return to Dashboard
+          </Link>
+        </div>
+      </AppLayout>
     );
   }
 
-  const currentStage = PIPELINE_STAGES.indexOf(claim.stage);
+  const handleExportPDF = () => {
+    generateClaimPDFReport(claim.id);
+  };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <BrandLockup to="/" />
-          <Button variant="ghost" size="sm" onClick={() => navigate({ to: "/" })}>
-            <ArrowLeft className="size-4" /> Back to dashboard
-          </Button>
-        </div>
-      </header>
+    <AppLayout
+      title={`Claim ${claim.id}`}
+      breadcrumbs={[
+        { label: "Dashboard", href: "/" },
+        { label: "Claims", href: "/claims" },
+        { label: claim.id },
+      ]}
+    >
+      <div className="space-y-8">
+        
+        {/* ========================================================================= */}
+        {/* CLAIM HEADER SUMMARY CARD */}
+        {/* ========================================================================= */}
+        <div className="flex flex-col justify-between gap-6 rounded-2xl border border-[#1F2937] bg-[#111827] p-6 shadow-xl lg:flex-row lg:items-center">
+          
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-bold text-[#3B82F6] uppercase tracking-wider">
+                {claim.id}
+              </span>
+              <span className="rounded-full border border-[#3B82F6]/30 bg-[#3B82F6]/10 px-2.5 py-0.5 font-mono text-[10px] text-[#3B82F6]">
+                FastAPI Synced
+              </span>
+              <span className="rounded-full border border-[#F59E0B]/30 bg-[#F59E0B]/10 px-2.5 py-0.5 font-mono text-[10px] text-[#F59E0B]">
+                {claim.routeDecision}
+              </span>
+            </div>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
-              {claim.id}
-            </p>
-            <h1 className="mt-1 font-display text-2xl font-semibold">{claim.patientName}</h1>
-            <p className="text-sm text-muted-foreground">{claim.diagnosis}</p>
+            <h1 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+              {claim.patientName} <span className="text-base font-normal text-[#9CA3AF]">({claim.patientAge} yrs)</span>
+            </h1>
+
+            <div className="flex flex-wrap items-center gap-4 text-xs text-[#9CA3AF]">
+              <span className="flex items-center gap-1.5 font-semibold text-[#06B6D4]">
+                <Building2 className="size-4" /> {claim.hospital}
+              </span>
+              <span>·</span>
+              <span className="flex items-center gap-1.5">
+                <Calendar className="size-4 text-[#9CA3AF]" />
+                Adm: <strong className="text-white font-mono">{formatDate(claim.admissionDate)}</strong> — Disch: <strong className="text-white font-mono">{formatDate(claim.dischargeDate)}</strong>
+              </span>
+              <span>·</span>
+              <span>Policy #: <strong className="text-white font-mono">{claim.policyNumber}</strong></span>
+            </div>
           </div>
-          <div className="flex flex-col items-end gap-2">
-            <StatusBadge status={claim.status} />
-            <ReadinessScore value={claim.readiness} />
+
+          <div className="flex flex-wrap items-center gap-4">
+            
+            {/* Amount Pill */}
+            <div className="rounded-xl border border-[#1F2937] bg-[#0B0F17] px-4 py-3 text-right">
+              <span className="text-[10px] font-mono text-[#9CA3AF] uppercase">Total Claimed Charges</span>
+              <p className="text-xl font-extrabold font-mono text-[#10B981]">{formatINR(claim.claimedAmount)}</p>
+            </div>
+
+            {/* Overall Score Pill */}
+            <div className="rounded-xl border border-[#06B6D4]/40 bg-[#06B6D4]/10 px-4 py-3 text-right shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+              <span className="text-[10px] font-mono text-[#06B6D4] uppercase">Readiness Score</span>
+              <p className="text-xl font-extrabold font-mono text-white">{claim.readiness}%</p>
+            </div>
+
+            {/* Export PDF Button */}
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#1F2937] bg-[#0B0F17] px-4 text-xs font-semibold text-white transition hover:border-[#3B82F6] hover:bg-[#111827]"
+            >
+              <Download className="size-4 text-[#3B82F6]" />
+              Export Report
+            </button>
+
           </div>
+
         </div>
 
-        <Card className="mt-6">
-          <CardContent className="grid gap-5 p-5 sm:grid-cols-2 lg:grid-cols-4">
-            <Detail label="Policy number" value={claim.policyNumber} />
-            <Detail label="Insurance provider" value={claim.insuranceProvider} />
-            <Detail label="Admission" value={formatDate(claim.admissionDate)} />
-            <Detail label="Discharge" value={formatDate(claim.dischargeDate)} />
-            <Detail label="Patient age" value={claim.patientAge ? `${claim.patientAge} yrs` : "—"} />
-            <Detail label="Claimed amount" value={formatINR(claim.claimedAmount)} />
-            <Detail label="Current stage" value={claim.stage} />
-            <Detail label="Readiness score" value={`${claim.readiness}%`} />
-          </CardContent>
-        </Card>
+        {/* ========================================================================= */}
+        {/* VISUAL 11-STAGE AI PIPELINE BAR */}
+        {/* ========================================================================= */}
+        <PipelineStageBar
+          currentStage={claim.stage}
+          activeStageIndex={activeStageIdx}
+          onSelectStage={(idx) => setActiveStageIdx(idx)}
+        />
 
-        <div className="mt-6 grid gap-6 lg:grid-cols-[20rem_1fr]">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Verification workflow</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {PIPELINE_STAGES.map((stage, i) => {
-                const done = i < currentStage;
-                const active = i === currentStage;
-                return (
-                  <div key={stage} className="flex items-center gap-3 text-sm">
-                    <span
-                      className={`flex size-5 shrink-0 items-center justify-center rounded-full border ${
-                        done
-                          ? "border-success bg-success text-success-foreground"
-                          : active
-                            ? "border-primary text-primary"
-                            : "border-border text-muted-foreground"
-                      }`}
-                    >
-                      {done ? (
-                        <Check className="size-3" />
-                      ) : active ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <CircleDashed className="size-3" />
-                      )}
-                    </span>
-                    <span className={active ? "font-medium" : done ? "" : "text-muted-foreground"}>
-                      {stage}
-                    </span>
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
+        {/* ========================================================================= */}
+        {/* INTERACTIVE WORKSPACE TABS */}
+        {/* ========================================================================= */}
+        <div className="flex border-b border-[#1F2937] space-x-2">
+          
+          <button
+            type="button"
+            onClick={() => setActiveTab("triage")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-xs font-bold transition ${
+              activeTab === "triage"
+                ? "border-[#F59E0B] text-[#F59E0B]"
+                : "border-transparent text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            <UserCheck className="size-4" /> Human Triage Desk
+          </button>
 
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Claim documents</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {claim.documents.map((doc) => (
-                  <div
-                    key={doc.category}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <FileText className="size-4 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">{doc.category}</p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {doc.fileName}
-                          {doc.note ? ` · ${doc.note}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <span
-                      className={`text-xs font-medium ${docStatusStyles[doc.status] ?? "text-muted-foreground"}`}
-                    >
-                      {doc.status}
-                    </span>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+          <button
+            type="button"
+            onClick={() => setActiveTab("ocr")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-xs font-bold transition ${
+              activeTab === "ocr"
+                ? "border-[#06B6D4] text-[#06B6D4]"
+                : "border-transparent text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            <FileText className="size-4" /> OCR Bounding Viewer ({claim.ocrConfidence}%)
+          </button>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Verification findings</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {claim.findings.map((f) => (
-                  <div key={f.label} className="flex items-start gap-3 text-sm">
-                    {f.severity === "ok" ? (
-                      <Check className="mt-0.5 size-4 shrink-0 text-success" />
-                    ) : (
-                      <AlertTriangle
-                        className={`mt-0.5 size-4 shrink-0 ${
-                          f.severity === "error" ? "text-destructive" : "text-warning"
-                        }`}
-                      />
-                    )}
-                    <div>
-                      <p className="font-medium">{f.label}</p>
-                      <p className="text-muted-foreground">{f.detail}</p>
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+          <button
+            type="button"
+            onClick={() => setActiveTab("medical")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-xs font-bold transition ${
+              activeTab === "medical"
+                ? "border-[#3B82F6] text-[#3B82F6]"
+                : "border-transparent text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            <Stethoscope className="size-4" /> Medical Intelligence
+          </button>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Final report</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <p className="text-muted-foreground">
-                  {claim.status === "Ready for Submission"
-                    ? "All required documents are verified and consistent with the policy. This claim can be submitted to the insurer."
-                    : claim.status === "Needs Review"
-                      ? "Discrepancies were found during validation. Resolve the findings above before submitting this claim."
-                      : "Verification is still in progress. The report will be available once all checks complete."}
-                </p>
-                <Button disabled={claim.status !== "Ready for Submission"}>
-                  Download final report
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab("policy")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-xs font-bold transition ${
+              activeTab === "policy"
+                ? "border-[#8B5CF6] text-[#8B5CF6]"
+                : "border-transparent text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            <BookOpen className="size-4" /> RAG Policy Evidence ({claim.policyConfidence}%)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("readiness")}
+            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-xs font-bold transition ${
+              activeTab === "readiness"
+                ? "border-[#10B981] text-[#10B981]"
+                : "border-transparent text-[#9CA3AF] hover:text-white"
+            }`}
+          >
+            <Zap className="size-4" /> Readiness Gauge ({claim.readiness}%)
+          </button>
+
         </div>
-      </main>
-    </div>
-  );
-}
 
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-medium">{value}</p>
-    </div>
+        {/* ========================================================================= */}
+        {/* TAB WORKSPACE PANELS */}
+        {/* ========================================================================= */}
+        <div className="mt-6">
+          {activeTab === "triage" && (
+            <HumanReviewTriage claim={claim} />
+          )}
+
+          {activeTab === "ocr" && (
+            <OcrViewer
+              confidence={claim.ocrConfidence}
+              lines={claim.ocrLines}
+              fileName={claim.documents[0]?.fileName}
+              documentCategory={claim.documents[0]?.category}
+            />
+          )}
+
+          {activeTab === "medical" && (
+            <MedicalIntelligence
+              diagnosis={claim.diagnosis}
+              medicalRiskScore={claim.medicalRiskScore}
+              medicalConfidence={claim.medicalConfidence}
+              services={claim.medicalServices}
+            />
+          )}
+
+          {activeTab === "policy" && (
+            <PolicyRagPanel
+              confidence={claim.policyConfidence}
+              clauses={claim.policyClauses}
+              policyNumber={claim.policyNumber}
+              insuranceProvider={claim.insuranceProvider}
+            />
+          )}
+
+          {activeTab === "readiness" && (
+            <ReadinessGauge
+              score={claim.readiness}
+              validationScore={claim.validationReadiness}
+              medicalScore={claim.medicalConfidence}
+              policyScore={claim.policyConfidence}
+              ocrScore={claim.ocrConfidence}
+            />
+          )}
+        </div>
+
+      </div>
+    </AppLayout>
   );
 }

@@ -2,15 +2,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import router as auth_router
+from .claims import router as claims_router
+from .documents import router as documents_router
 
 
 app = FastAPI(
     title="ClaimBridge API",
-    description="Intelligent Insurance Claim Verification and Readiness Assessment System",
+    description=(
+        "Intelligent Insurance Claim Verification "
+        "and Readiness Assessment System"
+    ),
     version="1.0.0",
 )
 
-#change that i done
+
+# =========================================================
+# CORS
+# =========================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -24,8 +33,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# =========================================================
+# API ROUTERS
+# =========================================================
+
 app.include_router(auth_router)
 
+app.include_router(claims_router)
+
+app.include_router(documents_router)
+
+
+# =========================================================
+# ROOT
+# =========================================================
 
 @app.get("/")
 def root():
@@ -34,6 +56,10 @@ def root():
         "status": "healthy",
     }
 
+
+# =========================================================
+# HEALTH CHECK
+# =========================================================
 
 @app.get("/health")
 def health_check():
