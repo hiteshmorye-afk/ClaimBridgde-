@@ -1,6 +1,8 @@
+import json
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from typing import Optional
 
 from fastapi import (
     APIRouter,
@@ -22,6 +24,21 @@ from .models import (
     VerificationResult,
 )
 from .pipeline import process_document
+from .validation_engine import validate_cross_document_consistency
+
+
+def safe_decimal(val, default=0.0) -> Decimal:
+    if val is None:
+        return Decimal(str(default))
+    if isinstance(val, (int, float, Decimal)):
+        return Decimal(str(val))
+    if isinstance(val, str):
+        cleaned = val.replace("%", "").strip()
+        try:
+            return Decimal(cleaned)
+        except Exception:
+            return Decimal(str(default))
+    return Decimal(str(default))
 
 
 router = APIRouter(
@@ -69,8 +86,8 @@ ALLOWED_EXTENSIONS = {
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    category: str = Form(...),
-    claim_id: str = Form(...),
+    category: str = Form("Auto-Detect"),
+    claim_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     """
@@ -92,7 +109,8 @@ async def upload_document(
             detail="No file was provided.",
         )
 
-    original_filename = file.filename
+    # Sanitize original filename to prevent path traversal
+    original_filename = Path(file.filename).name
 
     extension = Path(
         original_filename
@@ -108,38 +126,49 @@ async def upload_document(
         )
 
     # -----------------------------------------------------
-    # STEP 2 — VALIDATE CLAIM UUID
+    # STEP 2 & 3 — RESOLVE CLAIM
     # -----------------------------------------------------
 
-    try:
-        claim_uuid = uuid.UUID(claim_id)
+    claim = None
+    if claim_id:
+        try:
+            claim_uuid = uuid.UUID(claim_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid claim ID.",
+            )
 
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid claim ID.",
+        claim = (
+            db.query(Claim)
+            .filter(
+                Claim.id == claim_uuid
+            )
+            .first()
         )
 
-    # -----------------------------------------------------
-    # STEP 3 — VERIFY CLAIM EXISTS
-    # -----------------------------------------------------
-
-    claim = (
-        db.query(Claim)
-        .filter(
-            Claim.id == claim_uuid
+        if not claim:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Claim not found. "
+                    "Create the claim before uploading documents."
+                ),
+            )
+    else:
+        claim = (
+            db.query(Claim)
+            .order_by(Claim.created_at.desc())
+            .first()
         )
-        .first()
-    )
-
-    if not claim:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Claim not found. "
-                "Create the claim before uploading documents."
-            ),
-        )
+        if not claim:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No claim found to associate document with. "
+                    "Please specify claim_id or create a claim first."
+                ),
+            )
 
     # -----------------------------------------------------
     # STEP 4 — CREATE DOCUMENT UUID
@@ -156,7 +185,7 @@ async def upload_document(
     )
 
     # -----------------------------------------------------
-    # STEP 5 — SAVE FILE
+    # STEP 5 — SAVE FILE & VALIDATE CONTENT
     # -----------------------------------------------------
 
     try:
@@ -166,8 +195,23 @@ async def upload_document(
         if not file_content:
             raise HTTPException(
                 status_code=400,
-                detail="Uploaded file is empty.",
+                detail="Uploaded file is empty (0 bytes).",
             )
+
+        # Enforce 50 MB limit
+        if len(file_content) > 50 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="File size exceeds maximum allowed limit (50 MB).",
+            )
+
+        # Enforce valid PDF header
+        if extension == ".pdf":
+            if len(file_content) < 5 or not file_content.startswith(b"%PDF-"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid PDF file: Missing or invalid PDF signature (%PDF-).",
+                )
 
         with open(
             file_path,
@@ -430,6 +474,10 @@ def process_uploaded_document(
         )
     )
 
+    detected_category = classification_result.get("document_type")
+    if detected_category and detected_category != "unknown":
+        document.document_type = detected_category
+
     extraction_result = (
         pipeline_result.get(
             "extracted_information",
@@ -523,20 +571,11 @@ def process_uploaded_document(
             extraction_result
         )
 
-        extraction_record.ocr_confidence = (
-            Decimal(
-                str(
-                    ocr_result.get(
-                        "confidence",
-                        0,
-                    )
-                )
-            )
+        extraction_record.ocr_confidence = safe_decimal(
+            ocr_result.get("confidence", 0)
         )
 
-        extraction_record.extraction_status = (
-            "Completed"
-        )
+        extraction_record.extraction_status = "Completed"
 
         # -------------------------------------------------
         # STEP 9 — PERSIST MEDICAL ANALYSIS
@@ -545,287 +584,173 @@ def process_uploaded_document(
         existing_medical = (
             db.query(MedicalAnalysis)
             .filter(
-                MedicalAnalysis.claim_id
-                == document.claim_id,
-
-                MedicalAnalysis.document_id
-                == document.id,
+                MedicalAnalysis.claim_id == document.claim_id,
+                MedicalAnalysis.document_id == document.id,
             )
             .first()
         )
 
         if existing_medical:
-
-            medical_record = (
-                existing_medical
-            )
-
+            medical_record = existing_medical
         else:
-
-            medical_record = (
-                MedicalAnalysis(
-                    claim_id=document.claim_id,
-                    document_id=document.id,
-                )
+            medical_record = MedicalAnalysis(
+                claim_id=document.claim_id,
+                document_id=document.id,
             )
+            db.add(medical_record)
 
-            db.add(
-                medical_record
-            )
-
-        medical_record.diagnosis = (
+        medical_record.diagnosis = medical_result.get("diagnosis")
+        medical_record.procedure = medical_result.get("procedure")
+        medical_record.analysis_result = medical_result
+        medical_record.confidence_score = safe_decimal(
             medical_result.get(
-                "diagnosis"
+                "confidence_score",
+                medical_result.get(
+                    "medical_confidence",
+                    medical_result.get("confidence", 0),
+                ),
             )
         )
-
-        medical_record.procedure = (
+        medical_record.risk_score = safe_decimal(
             medical_result.get(
-                "procedure"
+                "risk_score",
+                medical_result.get("medical_risk_score", 0),
             )
         )
-
-        medical_record.analysis_result = (
-            medical_result
-        )
-
-        medical_record.confidence_score = (
-            Decimal(
-                str(
-                    medical_result.get(
-                        "medical_confidence",
-                        medical_result.get(
-                            "confidence",
-                            0,
-                        ),
-                    )
-                )
-            )
-        )
-
-        medical_record.risk_score = (
-            Decimal(
-                str(
-                    medical_result.get(
-                        "medical_risk_score",
-                        medical_result.get(
-                            "risk_score",
-                            0,
-                        ),
-                    )
-                )
-            )
-        )
-
-        medical_record.processing_status = (
-            "Completed"
-        )
+        medical_record.processing_status = "Completed"
 
         # -------------------------------------------------
-        # STEP 10 — PERSIST AI ANALYSIS RECORDS
+        # STEP 10 — PERSIST AI ANALYSIS RECORDS (UPSERT)
         # -------------------------------------------------
 
         ai_records = [
-            (
-                "Document Classification",
-                classification_result,
-            ),
-            (
-                "Policy Intelligence",
-                policy_result,
-            ),
-            (
-                "Validation",
-                validation_result,
-            ),
-            (
-                "Claim Readiness",
-                readiness_result,
-            ),
-            (
-                "Confidence",
-                confidence_result,
-            ),
-            (
-                "Final Claim Decision",
-                final_decision_result,
-            ),
+            ("Document Classification", classification_result),
+            ("Policy Intelligence", policy_result),
+            ("Validation", validation_result),
+            ("Claim Readiness", readiness_result),
+            ("Confidence", confidence_result),
+            ("Final Claim Decision", final_decision_result),
         ]
 
         for analysis_type, result in ai_records:
-
-            confidence_value = (
+            confidence_value = result.get(
+                "confidence",
                 result.get(
-                    "confidence",
+                    "confidence_score",
                     result.get(
-                        "confidence_score",
+                        "retrieval_confidence",
                         result.get(
-                            "retrieval_confidence",
-                            result.get(
-                                "overall_confidence",
-                                result.get(
-                                    "readiness_score",
-                                    0,
-                                ),
-                            ),
+                            "overall_confidence",
+                            result.get("readiness_score", 0),
                         ),
                     ),
+                ),
+            )
+
+            risk_value = result.get(
+                "risk_score",
+                result.get("medical_risk_score", 0),
+            )
+
+            existing_ai = (
+                db.query(AIAnalysis)
+                .filter(
+                    AIAnalysis.claim_id == document.claim_id,
+                    AIAnalysis.document_id == document.id,
+                    AIAnalysis.analysis_type == analysis_type,
                 )
+                .first()
             )
 
-            risk_value = (
-                result.get(
-                    "risk_score",
-                    result.get(
-                        "medical_risk_score",
-                        0,
-                    ),
+            if existing_ai:
+                ai_record = existing_ai
+            else:
+                ai_record = AIAnalysis(
+                    claim_id=document.claim_id,
+                    document_id=document.id,
+                    analysis_type=analysis_type,
                 )
-            )
+                db.add(ai_record)
 
-            ai_record = AIAnalysis(
-                claim_id=document.claim_id,
-
-                document_id=document.id,
-
-                analysis_type=analysis_type,
-
-                model_name=(
-                    "ClaimBridge Pipeline"
-                ),
-
-                input_data={
-                    "document_id": str(
-                        document.id
-                    ),
-                    "file_name": (
-                        document.file_name
-                    ),
-                },
-
-                analysis_result=result,
-
-                confidence_score=Decimal(
-                    str(
-                        confidence_value
-                        or 0
-                    )
-                ),
-
-                risk_score=Decimal(
-                    str(
-                        risk_value
-                        or 0
-                    )
-                ),
-
-                processing_status="Completed",
-            )
-
-            db.add(
-                ai_record
-            )
+            ai_record.model_name = "ClaimBridge Pipeline"
+            ai_record.input_data = {
+                "document_id": str(document.id),
+                "file_name": document.file_name,
+            }
+            ai_record.analysis_result = result
+            ai_record.confidence_score = safe_decimal(confidence_value)
+            ai_record.risk_score = safe_decimal(risk_value)
+            ai_record.processing_status = "Completed"
 
         # -------------------------------------------------
-        # STEP 11 — PERSIST VERIFICATION RESULT
+        # STEP 11 — PERSIST VERIFICATION RESULT & CROSS RECONCILIATION
         # -------------------------------------------------
 
-        readiness_score = (
-            readiness_result.get(
-                "readiness_score",
-                0,
-            )
+        readiness_score = readiness_result.get("readiness_score", 0)
+        verification_status = validation_result.get("status", "Completed")
+
+        missing_documents = validation_result.get(
+            "missing",
+            validation_result.get("missing_documents", []),
         )
 
-        verification_status = (
-            validation_result.get(
-                "status",
-                "Completed",
+        mismatches = validation_result.get("mismatches", [])
+        risk_indicators = validation_result.get("risk_indicators", [])
+
+        # Cross-document reconciliation across all documents for this claim
+        other_extractions = (
+            db.query(DocumentExtraction)
+            .join(ClaimDocument, DocumentExtraction.document_id == ClaimDocument.id)
+            .filter(
+                ClaimDocument.claim_id == document.claim_id,
+                ClaimDocument.id != document.id,
+                DocumentExtraction.extraction_status == "Completed",
             )
+            .all()
         )
 
-        missing_documents = (
-            validation_result.get(
-                "missing",
-                validation_result.get(
-                    "missing_documents",
-                    [],
-                ),
-            )
-        )
+        all_doc_extractions = [
+            e.extracted_data for e in other_extractions if e.extracted_data
+        ] + [extraction_result]
 
-        mismatches = (
-            validation_result.get(
-                "mismatches",
-                [],
-            )
-        )
+        cross_reconciliation = validate_cross_document_consistency(all_doc_extractions)
 
-        risk_indicators = (
-            validation_result.get(
-                "risk_indicators",
-                [],
-            )
-        )
+        # Merge single-doc and cross-document mismatches & risks
+        combined_mismatches = list(dict.fromkeys(mismatches + cross_reconciliation.get("mismatches", [])))
+        combined_risk_indicators = list(dict.fromkeys(risk_indicators + cross_reconciliation.get("risk_indicators", [])))
+        combined_missing_docs = list(dict.fromkeys(missing_documents + cross_reconciliation.get("missing_documents", [])))
 
-        verification_summary = {
+        if combined_mismatches:
+            verification_status = "Needs Review"
+            mismatch_penalty = min(len(combined_mismatches) * 10, 40)
+            readiness_score = max(0.0, float(readiness_score) - mismatch_penalty)
+
+        verification_summary_data = {
             "validation": validation_result,
             "claim_readiness": readiness_result,
             "confidence": confidence_result,
-            "final_claim_decision": (
-                final_decision_result
-            ),
+            "final_claim_decision": final_decision_result,
+            "cross_document_validation": cross_reconciliation,
         }
 
         verification_record = (
             db.query(VerificationResult)
-            .filter(
-                VerificationResult.claim_id
-                == document.claim_id
-            )
+            .filter(VerificationResult.claim_id == document.claim_id)
             .first()
         )
 
         if not verification_record:
-
-            verification_record = (
-                VerificationResult(
-                    claim_id=document.claim_id
-                )
+            verification_record = VerificationResult(
+                claim_id=document.claim_id
             )
+            db.add(verification_record)
 
-            db.add(
-                verification_record
-            )
-
-        verification_record.readiness_score = (
-            Decimal(
-                str(
-                    readiness_score
-                    or 0
-                )
-            )
-        )
-
-        verification_record.verification_status = (
-            verification_status
-        )
-
-        verification_record.missing_documents = (
-            missing_documents
-        )
-
-        verification_record.mismatches = (
-            mismatches
-        )
-
-        verification_record.risk_indicators = (
-            risk_indicators
-        )
-
-        verification_record.verification_summary = (
-            verification_summary
-        )
+        verification_record.readiness_score = safe_decimal(readiness_score)
+        verification_record.verification_status = verification_status
+        verification_record.missing_documents = combined_missing_docs
+        verification_record.mismatches = combined_mismatches
+        verification_record.risk_indicators = combined_risk_indicators
+        verification_record.verification_summary = json.dumps(verification_summary_data)
 
         # -------------------------------------------------
         # STEP 12 — UPDATE CLAIM READINESS
@@ -833,23 +758,12 @@ def process_uploaded_document(
 
         claim = (
             db.query(Claim)
-            .filter(
-                Claim.id
-                == document.claim_id
-            )
+            .filter(Claim.id == document.claim_id)
             .first()
         )
 
         if claim:
-
-            claim.readiness_score = (
-                Decimal(
-                    str(
-                        readiness_score
-                        or 0
-                    )
-                )
-            )
+            claim.readiness_score = safe_decimal(readiness_score)
 
         # -------------------------------------------------
         # STEP 13 — MARK DOCUMENT COMPLETE

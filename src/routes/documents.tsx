@@ -10,7 +10,7 @@ import {
 import { AppLayout } from "@/components/layout/AppLayout";
 import { DOC_CATEGORIES } from "@/lib/claims";
 import { toast } from "sonner";
-import { uploadDocument } from "@/api/documents";
+import { uploadDocument, processDocument } from "@/api/documents";
 
 export const Route = createFileRoute("/documents")({
   head: () => ({
@@ -123,7 +123,7 @@ function DocumentsPage() {
 
       const result = await uploadDocument(
         file,
-        "Hospital Bill"
+        "Auto-Detect"
       );
 
       if (!result) {
@@ -132,17 +132,21 @@ function DocumentsPage() {
         );
       }
 
-      toast.success(
-        `Document ${file.name} uploaded successfully`,
-        {
-          description:
-            "Document accepted by the ClaimBridge backend.",
-        }
-      );
+      toast.info(`Processing ${file.name} with ClaimBridge AI...`, {
+        description: "Executing PDF OCR, classification, and extraction.",
+      });
 
-      console.log(
-        "ClaimBridge document upload result:",
-        result
+      const procResult = await processDocument(result.documentId);
+      const detectedCat =
+        procResult?.pipeline?.classification?.document_type ||
+        result.category ||
+        "Document";
+
+      toast.success(
+        `${file.name} processed: Classified as ${detectedCat.replace(/_/g, " ").toUpperCase()}`,
+        {
+          description: `Claim Readiness: ${procResult?.pipeline?.claim_readiness?.readiness_score || 0}%`,
+        }
       );
     } catch (error: any) {
       console.error(

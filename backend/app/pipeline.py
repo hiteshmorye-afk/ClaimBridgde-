@@ -119,7 +119,8 @@ def process_document(
     print("\n[3/9] Extracting information...")
 
     extraction_result = extract_information(
-        extracted_text
+        extracted_text,
+        document_type=classification_result.get("document_type"),
     )
 
     # =====================================================

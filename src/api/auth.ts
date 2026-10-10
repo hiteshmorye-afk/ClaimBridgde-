@@ -16,44 +16,89 @@ export async function loginUser(credentials: {
   portal?: "TPA" | "Hospital";
   role?: "Coordinator" | "Reviewer" | "Admin";
 }) {
-  const response = await apiFetch<UserProfile>("/auth/login", {
+  const isEmail = credentials.email.includes("@");
+  const emailToSubmit = isEmail
+    ? credentials.email
+    : `${credentials.email}@apsit.edu.in`;
+
+  const response = await apiFetch<{
+    message: string;
+    user_id: string;
+    full_name: string;
+    email: string;
+    role: string;
+  }>("/auth/login", {
     method: "POST",
-    body: JSON.stringify(credentials),
+    body: JSON.stringify({
+      email: emailToSubmit,
+      password: credentials.password || "Password#123",
+    }),
   });
 
-  if (response.data?.token && typeof window !== "undefined") {
-    window.localStorage.setItem(
-      "claimbridge_auth_token",
-      response.data.token,
-    );
+  if (response.error || !response.data?.user_id) {
+    throw new Error(response.error || "Invalid email or password");
   }
 
-  // Fallback mock session for smooth frontend operation
-  const identifier = credentials.email || "23102030";
-  const isEmail = identifier.includes("@");
-  const userName = isEmail ? identifier.split("@")[0] : identifier;
-  const userEmail = isEmail
-    ? identifier
-    : `${identifier}@apsit.edu.in`;
-
-  const user: UserProfile = response.data || {
-    id: identifier,
-    email: userEmail,
-    name: userName,
-    role: credentials.portal === "TPA" ? "Admin" : "Coordinator",
+  const user: UserProfile = {
+    id: response.data.user_id,
+    email: response.data.email,
+    name: response.data.full_name,
+    role: (response.data.role as any) || "Coordinator",
     portal: credentials.portal || "Hospital",
-    hospital:
-      credentials.portal === "Hospital"
-        ? "Chong Hua Hospital"
-        : "Pacific TPA Gateway",
-    token: "jwt_mock_token_claimbridge_2026",
+    token: `token_${response.data.user_id}`,
   };
 
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(
-      "claimbridge_user",
-      JSON.stringify(user),
-    );
+    window.localStorage.setItem("claimbridge_user", JSON.stringify(user));
+    window.localStorage.setItem("claimbridge_auth_token", user.token);
+  }
+
+  return user;
+}
+
+export async function registerUser(data: {
+  fullName: string;
+  email: string;
+  password: string;
+  role?: string;
+  portal?: "TPA" | "Hospital";
+}) {
+  const isEmail = data.email.includes("@");
+  const emailToSubmit = isEmail
+    ? data.email
+    : `${data.email}@apsit.edu.in`;
+
+  const response = await apiFetch<{
+    message: string;
+    user_id: string;
+    email: string;
+    role: string;
+  }>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      full_name: data.fullName,
+      email: emailToSubmit,
+      password: data.password,
+      role: data.role || (data.portal === "TPA" ? "Admin" : "Coordinator"),
+    }),
+  });
+
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Registration failed");
+  }
+
+  const user: UserProfile = {
+    id: response.data.user_id,
+    email: response.data.email,
+    name: data.fullName,
+    role: (response.data.role as any) || "Coordinator",
+    portal: data.portal || "Hospital",
+    token: `token_${response.data.user_id}`,
+  };
+
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("claimbridge_user", JSON.stringify(user));
+    window.localStorage.setItem("claimbridge_auth_token", user.token);
   }
 
   return user;

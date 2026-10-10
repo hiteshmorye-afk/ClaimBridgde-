@@ -3,7 +3,8 @@ import React, { useState } from "react";
 import { UserCheck, Search, Filter, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { HumanReviewTriage } from "@/components/pipeline/HumanReviewTriage";
-import { useClaims, getClaim } from "@/lib/claims";
+import { useClaims, getClaim, syncClaimsFromBackend } from "@/lib/claims";
+import { fetchClaims } from "@/api/claims";
 
 export const Route = createFileRoute("/review")({
   head: () => ({
@@ -20,8 +21,19 @@ export const Route = createFileRoute("/review")({
 
 function HumanReviewPage() {
   const claims = useClaims();
-  const reviewClaims = claims.filter((c) => c.status === "Needs Review" || c.readiness < 90);
-  const [selectedClaimId, setSelectedClaimId] = useState(reviewClaims[0]?.id || "CLM-TEST-001");
+
+  React.useEffect(() => {
+    fetchClaims()
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          syncClaimsFromBackend(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const reviewClaims = claims.filter((c) => c.status === "Needs Review" || c.readiness < 90 || c.status === "Under Analysis");
+  const [selectedClaimId, setSelectedClaimId] = useState(reviewClaims[0]?.id || claims[0]?.id || "CLM-TEST-001");
 
   const currentClaim = getClaim(selectedClaimId) || claims[0];
 

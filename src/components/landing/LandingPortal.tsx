@@ -21,7 +21,7 @@ import {
   X,
   Lock,
 } from "lucide-react";
-import { loginUser } from "@/api/auth";
+import { loginUser, registerUser } from "@/api/auth";
 import { useTheme } from "@/hooks/useTheme";
 import { toast } from "sonner";
 
@@ -131,17 +131,22 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
     setIsAuthenticating(true);
 
     try {
-      await loginUser({
-        email,
-        password,
-        portal: portalType,
-      });
-
       if (authMode === "signup") {
+        await registerUser({
+          fullName,
+          email,
+          password,
+          portal: portalType,
+        });
         toast.success(`Account created for ${fullName}`, {
           description: "Welcome to ClaimBridge Enterprise AI Workspace.",
         });
       } else {
+        await loginUser({
+          email,
+          password,
+          portal: portalType,
+        });
         toast.success(`Authenticated as ${email}`);
       }
 
@@ -149,9 +154,9 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
         setIsAuthenticating(false);
         onAuthenticated();
       }, 600);
-    } catch {
+    } catch (err: any) {
       setIsAuthenticating(false);
-      onAuthenticated();
+      toast.error(err.message || "Authentication failed. Please check credentials.");
     }
   };
 

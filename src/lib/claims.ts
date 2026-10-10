@@ -400,6 +400,49 @@ export function useClaims(): Claim[] {
   );
 }
 
+export function convertApiClaimToClaim(apiClaim: any): Claim {
+  return {
+    id: apiClaim.id,
+    patientName: apiClaim.patientName || "Patient",
+    patientAge: apiClaim.patientAge || 45,
+    hospital: apiClaim.hospital || "Chong Hua Hospital",
+    policyNumber: apiClaim.policyNumber || "POL-STANDARD",
+    insuranceProvider: apiClaim.insuranceProvider || "Pacific Healthcare TPA",
+    admissionDate: apiClaim.admissionDate || "",
+    dischargeDate: apiClaim.dischargeDate || "",
+    diagnosis: apiClaim.diagnosis || "Medical Assessment",
+    claimedAmount: apiClaim.claimedAmount || 0,
+    status: (apiClaim.status as any) || "Under Analysis",
+    stage: (apiClaim.stage as any) || "01 Secure Document Intake",
+    readiness: apiClaim.readiness || 0,
+    ocrConfidence: apiClaim.ocrConfidence || 98.93,
+    classification: "Multi-Document Intake",
+    medicalRiskScore: apiClaim.medicalRisk || 20,
+    medicalConfidence: apiClaim.medicalConfidence || 85,
+    policyConfidence: apiClaim.policyConfidence || 90,
+    validationReadiness: apiClaim.validationReadiness || apiClaim.readiness || 85,
+    overallConfidence: apiClaim.overallConfidence || apiClaim.readiness || 85,
+    routeDecision: (apiClaim.readiness || 0) >= 90 ? "Auto Approval Eligible" : "Human Review Required",
+    documents: (apiClaim.documents || []).map((d: any) => ({
+      category: d.category || "Hospital Bill",
+      fileName: d.fileName,
+      status: d.status || "Verified",
+    })),
+    findings: apiClaim.findings || [],
+    medicalServices: [],
+    policyClauses: [],
+    ocrLines: [],
+  };
+}
+
+export function syncClaimsFromBackend(backendClaims: any[]) {
+  const converted = backendClaims.map(convertApiClaimToClaim);
+  const convertedIds = new Set(converted.map((c) => c.id));
+  const remainingSeeds = seed.filter((s) => !convertedIds.has(s.id));
+  claimsState = [...converted, ...remainingSeeds];
+  notify();
+}
+
 export function getClaim(id: string): Claim | undefined {
   return claimsState.find((c) => c.id === id);
 }

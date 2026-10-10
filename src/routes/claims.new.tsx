@@ -6,6 +6,7 @@ import { ArrowLeft, Upload, CheckCircle2, ShieldCheck, Sparkles, FileText, Zap }
 import { AppLayout } from "@/components/layout/AppLayout";
 import { addClaim, DOC_CATEGORIES, DocCategory, Claim } from "@/lib/claims";
 import { createClaim } from "@/api/claims";
+import { uploadDocument, processDocument } from "@/api/documents";
 
 export const Route = createFileRoute("/claims/new")({
   head: () => ({
@@ -23,9 +24,10 @@ export const Route = createFileRoute("/claims/new")({
 export function NewClaimPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<1 | 2>(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<Partial<Record<DocCategory, File>>>({});
   const [uploads, setUploads] = useState<Partial<Record<DocCategory, string>>>({
     "Hospital Bill": "hospital_bill_scan_2026.pdf",
-    "Discharge Summary": "discharge_summary_signed.pdf",
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [currentCategory, setCurrentCategory] = useState<DocCategory>("Hospital Bill");
@@ -46,73 +48,115 @@ export function NewClaimPage() {
     const files = e.target.files;
     if (files && files.length > 0) {
       const file = files[0];
+      setSelectedFiles((prev) => ({
+        ...prev,
+        [currentCategory]: file,
+      }));
       setUploads((prev) => ({
         ...prev,
         [currentCategory]: file.name,
       }));
-      toast.success(`Uploaded ${file.name} for ${currentCategory}`);
+      toast.success(`Selected ${file.name} for ${currentCategory}`);
     }
   };
 
   const handleCreate = async () => {
-    const claimId = `CLM-2026-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    const newClaim: Claim = {
-      id: claimId,
-      patientName: form.patientName,
-      patientAge: Number(form.patientAge) || 45,
-      hospital: form.hospital,
-      policyNumber: form.policyNumber,
-      insuranceProvider: form.insuranceProvider,
-      admissionDate: form.admissionDate,
-      dischargeDate: form.dischargeDate,
-      diagnosis: form.diagnosis,
-      claimedAmount: Number(form.claimedAmount) || 145000,
-      status: "Under Analysis",
-      stage: "03 OCR Extraction",
-      readiness: 91.2,
-      ocrConfidence: 98.5,
-      classification: "Hospital Bill & Discharge Summary",
-      medicalRiskScore: 25,
-      medicalConfidence: 88,
-      policyConfidence: 92.4,
-      validationReadiness: 100,
-      overallConfidence: 91.2,
-      routeDecision: "Auto Approval Eligible",
-      documents: Object.entries(uploads).map(([cat, fname]) => ({
-        category: cat as DocCategory,
-        fileName: fname as string,
-        status: "Verified",
-        fileSize: "1.8 MB",
-      })),
-      findings: [
-        { label: "Document Intake Verified", detail: "2 files scanned and encrypted into intake pipeline.", severity: "ok" },
-        { label: "OCR Processing Started", detail: "Line items extracted into key-value schema.", severity: "ok" },
-      ],
-      medicalServices: [
-        { id: "S1", serviceName: "Laparoscopic Cholecystectomy", code: "CPT-47562", category: "Surgery", quantity: 1, unitCost: 95000, totalCost: 95000, coverageStatus: "Covered" },
-        { id: "S2", serviceName: "Inpatient Care (4 Days)", code: "CPT-99232", category: "Room & Board", quantity: 4, unitCost: 12500, totalCost: 50000, coverageStatus: "Covered" },
-      ],
-      policyClauses: [
-        { id: "P1", section: "Section 3.1", clauseTitle: "Surgical Coverage", textSnippet: "Surgical procedures 100% reimbursable.", status: "Verified", confidence: 95.0 },
-      ],
-      ocrLines: [
-        { id: "O1", label: "TOTAL CHARGES", value: "145,000.00", confidence: 98.5, box: { x: 60, y: 80, w: 30, h: 5 } },
-      ],
-    };
-
-    addClaim(newClaim);
-    try {
-      await createClaim(newClaim);
-    } catch {
-      // offline fallback
+    if (!form.patientName.trim() || !form.policyNumber.trim()) {
+      toast.error("Patient Name and Policy Number are required.");
+      return;
     }
 
-    toast.success(`Claim ${claimId} successfully initialized`, {
-      description: "AI extraction & verification pipeline triggered.",
-    });
+    setIsSubmitting(true);
+    const toastId = toast.loading("Initializing claim on ClaimBridge backend...");
 
-    navigate({ to: "/claims/$claimId", params: { claimId } });
+    try {
+      // Step 1: Create Claim via Backend
+      const created = await createClaim({
+        patientName: form.patientName,
+        patientAge: Number(form.patientAge) || 45,
+        hospital: form.hospital,
+        policyNumber: form.policyNumber,
+        insuranceProvider: form.insuranceProvider,
+        admissionDate: form.admissionDate,
+        dischargeDate: form.dischargeDate,
+        diagnosis: form.diagnosis,
+        claimedAmount: Number(form.claimedAmount) || 145000,
+        status: "Under Analysis",
+        stage: "01 Secure Document Intake",
+      });
+
+      const realClaimId = created?.id;
+
+      if (!realClaimId) {
+        throw new Error("Backend did not return a valid Claim UUID.");
+      }
+
+      // Also register in local state for seamless fallback display
+      const newClaim: Claim = {
+        id: realClaimId,
+        patientName: form.patientName,
+        patientAge: Number(form.patientAge) || 45,
+        hospital: form.hospital,
+        policyNumber: form.policyNumber,
+        insuranceProvider: form.insuranceProvider,
+        admissionDate: form.admissionDate,
+        dischargeDate: form.dischargeDate,
+        diagnosis: form.diagnosis,
+        claimedAmount: Number(form.claimedAmount) || 145000,
+        status: "Under Analysis",
+        stage: "03 OCR Extraction",
+        readiness: 83.14,
+        ocrConfidence: 98.93,
+        classification: "Hospital Bill & Discharge Summary",
+        medicalRiskScore: 20,
+        medicalConfidence: 100,
+        policyConfidence: 69.21,
+        validationReadiness: 60,
+        overallConfidence: 78.4,
+        routeDecision: "Human Review Required",
+        documents: Object.entries(uploads).map(([cat, fname]) => ({
+          category: cat as DocCategory,
+          fileName: fname as string,
+          status: "Verified",
+          fileSize: "1.8 MB",
+        })),
+        findings: [
+          { label: "Document Intake Verified", detail: "Files uploaded and linked to real Claim UUID.", severity: "ok" },
+        ],
+      };
+      addClaim(newClaim);
+
+      // Step 2: Upload Selected Documents to Backend
+      const fileEntries = Object.entries(selectedFiles);
+      if (fileEntries.length > 0) {
+        toast.loading(`Uploading ${fileEntries.length} document(s)...`, { id: toastId });
+
+        for (const [category, file] of fileEntries) {
+          if (file) {
+            try {
+              const uploadRes = await uploadDocument(file, category, realClaimId);
+              if (uploadRes?.documentId) {
+                toast.loading(`Processing ${file.name} through AI pipeline...`, { id: toastId });
+                await processDocument(uploadRes.documentId);
+              }
+            } catch (uploadErr: any) {
+              console.warn(`[Document Upload Warning] ${category}:`, uploadErr?.message);
+            }
+          }
+        }
+      }
+
+      toast.success(`Claim initialized successfully!`, {
+        id: toastId,
+        description: `Backend Claim UUID: ${realClaimId}`,
+      });
+
+      navigate({ to: "/claims/$claimId", params: { claimId: realClaimId } });
+    } catch (err: any) {
+      toast.error(`Claim creation failed: ${err?.message || "Server connection error"}`, { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (

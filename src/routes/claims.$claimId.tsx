@@ -18,7 +18,8 @@ import {
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout/AppLayout";
-import { getClaim, formatDate, formatINR } from "@/lib/claims";
+import { getClaim, formatDate, formatINR, convertApiClaimToClaim, Claim } from "@/lib/claims";
+import { fetchClaimById } from "@/api/claims";
 import { PipelineStageBar } from "@/components/pipeline/PipelineStageBar";
 import { OcrViewer } from "@/components/pipeline/OcrViewer";
 import { MedicalIntelligence } from "@/components/pipeline/MedicalIntelligence";
@@ -47,7 +48,31 @@ function ClaimDetailPage() {
   const { claimId } = useParams({ from: "/claims/$claimId" });
   const navigate = useNavigate();
 
-  const claim = getClaim(claimId) || getClaim("CLM-TEST-001");
+  const [apiClaim, setApiClaim] = useState<Claim | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  React.useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    fetchClaimById(claimId)
+      .then((data) => {
+        if (isMounted && data) {
+          setApiClaim(convertApiClaimToClaim(data));
+        }
+      })
+      .catch((err) => {
+        console.warn("Backend claim lookup:", err);
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [claimId]);
+
+  const localFallback = getClaim(claimId) || getClaim("CLM-TEST-001");
+  const claim = apiClaim || localFallback;
 
   const [activeTab, setActiveTab] = useState<TabType>("triage");
   const [activeStageIdx, setActiveStageIdx] = useState(8); // Default Stage 09: Claim Readiness

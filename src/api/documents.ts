@@ -40,14 +40,16 @@ export interface DocumentUploadResult {
  */
 export async function uploadDocument(
   file: File,
-  category: string,
-  claimId: string,
+  category: string = "Auto-Detect",
+  claimId?: string,
 ) {
   const formData = new FormData();
 
   formData.append("file", file);
-  formData.append("category", category);
-  formData.append("claim_id", claimId);
+  formData.append("category", category || "Auto-Detect");
+  if (claimId) {
+    formData.append("claim_id", claimId);
+  }
 
   const response = await apiFetch<DocumentUploadResult>(
     "/documents/upload",
@@ -70,6 +72,24 @@ export async function fetchDocumentOcr(
   const response = await apiFetch<OcrExtractionResult>(
     `/documents/${documentId}/ocr`,
   );
+
+  return response.data;
+}
+
+/**
+ * Initiate processing of an uploaded document through the AI pipeline.
+ */
+export async function processDocument(documentId: string) {
+  const response = await apiFetch<{
+    documentId: string;
+    claimId: string;
+    fileName: string;
+    processingStatus: string;
+    pipeline: any;
+    message: string;
+  }>(`/documents/${documentId}/process`, {
+    method: "POST",
+  });
 
   return response.data;
 }

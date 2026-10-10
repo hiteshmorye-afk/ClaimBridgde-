@@ -14,7 +14,8 @@ import {
   FileCheck,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { useClaims, formatINR } from "@/lib/claims";
+import { useClaims, formatINR, syncClaimsFromBackend } from "@/lib/claims";
+import { fetchClaims } from "@/api/claims";
 import { generateClaimPDFReport } from "@/api/integrations";
 
 export const Route = createFileRoute("/claims/")({
@@ -34,6 +35,16 @@ function ClaimsIndexPage() {
   const claims = useClaims();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+
+  React.useEffect(() => {
+    fetchClaims()
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          syncClaimsFromBackend(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const filtered = claims.filter((c) => {
     const matches =
