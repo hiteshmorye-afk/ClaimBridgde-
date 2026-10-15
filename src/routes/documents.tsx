@@ -1,16 +1,21 @@
-import { createFileRoute } from "@tanstack/react-router";
-import React, { useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   FileText,
   Upload,
   Search,
   Eye,
   Download,
+  RefreshCw,
+  Loader2,
+  Inbox,
+  AlertCircle,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { DOC_CATEGORIES } from "@/lib/claims";
+import { DOCUMENT_CATALOGUE, DOCUMENT_SECTIONS } from "@/lib/documentCatalogue";
 import { toast } from "sonner";
-import { uploadDocument, processDocument } from "@/api/documents";
+import { uploadDocument, processDocument, fetchDocuments, VaultDocument } from "@/api/documents";
 
 export const Route = createFileRoute("/documents")({
   head: () => ({
@@ -26,74 +31,34 @@ export const Route = createFileRoute("/documents")({
   component: DocumentsPage,
 });
 
-const sampleDocuments = [
-  {
-    id: "DOC-001",
-    name: "chong_hua_bill_184k.pdf",
-    category: "Hospital Bill",
-    claimId: "CLM-TEST-001",
-    confidence: 98.93,
-    status: "Verified",
-    size: "2.4 MB",
-    date: "19.05.2019",
-  },
-  {
-    id: "DOC-002",
-    name: "discharge_summary_tuhod.pdf",
-    category: "Discharge Summary",
-    claimId: "CLM-TEST-001",
-    confidence: 99.1,
-    status: "Verified",
-    size: "1.8 MB",
-    date: "19.05.2019",
-  },
-  {
-    id: "DOC-003",
-    name: "pacific_health_card.png",
-    category: "Insurance Card",
-    claimId: "CLM-TEST-001",
-    confidence: 97.5,
-    status: "Verified",
-    size: "850 KB",
-    date: "16.05.2019",
-  },
-  {
-    id: "DOC-004",
-    name: "rx_medications_may2019.pdf",
-    category: "Prescription",
-    claimId: "CLM-TEST-001",
-    confidence: 98.2,
-    status: "Verified",
-    size: "620 KB",
-    date: "16.05.2019",
-  },
-  {
-    id: "DOC-005",
-    name: "stent_bill.pdf",
-    category: "Hospital Bill",
-    claimId: "CLM-2026-0891",
-    confidence: 96.4,
-    status: "Mismatch",
-    size: "3.1 MB",
-    date: "26.07.2026",
-  },
-  {
-    id: "DOC-006",
-    name: "star_health_card.pdf",
-    category: "Insurance Card",
-    claimId: "CLM-2026-0892",
-    confidence: 99.4,
-    status: "Verified",
-    size: "1.2 MB",
-    date: "18.07.2026",
-  },
-];
-
 function DocumentsPage() {
+  const [documents, setDocuments] = useState<VaultDocument[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
 
-  const filtered = sampleDocuments.filter((doc) => {
+  const loadDocuments = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchDocuments({
+        search: search.trim() || undefined,
+        category: categoryFilter !== "All" ? categoryFilter : undefined,
+      });
+      setDocuments(data || []);
+    } catch (err: any) {
+      console.warn("Failed to fetch documents:", err);
+      toast.error("Failed to load documents vault from backend.");
+      setDocuments([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [search, categoryFilter]);
+
+  useEffect(() => {
+    loadDocuments();
+  }, [loadDocuments]);
+
+  const filtered = documents.filter((doc) => {
     const matches =
       doc.name.toLowerCase().includes(search.toLowerCase()) ||
       doc.claimId.toLowerCase().includes(search.toLowerCase()) ||
@@ -103,7 +68,7 @@ function DocumentsPage() {
       return matches;
     }
 
-    return matches && doc.category === categoryFilter;
+    return matches && doc.category.toLowerCase().includes(categoryFilter.toLowerCase());
   });
 
   const handleUpload = async (
@@ -148,6 +113,7 @@ function DocumentsPage() {
           description: `Claim Readiness: ${procResult?.pipeline?.claim_readiness?.readiness_score || 0}%`,
         }
       );
+      loadDocuments();
     } catch (error: any) {
       console.error(
         "ClaimBridge document upload failed:",
@@ -190,18 +156,29 @@ function DocumentsPage() {
             </p>
           </div>
 
-          <label className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-5 text-xs font-bold text-white shadow-lg shadow-[#3B82F6]/30 hover:shadow-xl transition">
-            <Upload className="size-4" />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={loadDocuments}
+              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] px-3.5 text-xs font-semibold text-slate-700 dark:text-white hover:border-[#3B82F6] transition shadow-sm"
+            >
+              <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
 
-            Upload Document
+            <label className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-5 text-xs font-bold text-white shadow-lg shadow-[#3B82F6]/30 hover:shadow-xl transition">
+              <Upload className="size-4" />
 
-            <input
-              type="file"
-              accept=".png,.jpg,.jpeg,.pdf"
-              onChange={handleUpload}
-              className="hidden"
-            />
-          </label>
+              Upload Document
+
+              <input
+                type="file"
+                accept=".png,.jpg,.jpeg,.pdf"
+                onChange={handleUpload}
+                className="hidden"
+              />
+            </label>
+          </div>
         </div>
 
         {/* SEARCH & CATEGORY FILTERS */}
@@ -219,33 +196,48 @@ function DocumentsPage() {
             />
           </div>
 
-          <div className="flex flex-wrap gap-1.5 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-100 dark:bg-[#0B0F17] p-1">
-
-            <button
-              onClick={() => setCategoryFilter("All")}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                categoryFilter === "All"
-                  ? "bg-[#3B82F6] text-white shadow-sm"
-                  : "text-slate-600 dark:text-[#9CA3AF] hover:text-slate-900 dark:hover:text-white"
-              }`}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="h-10 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] px-3 text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-[#3B82F6]"
             >
-              All Categories
-            </button>
+              <option value="All">All Categories (15 Document Types)</option>
+              {DOCUMENT_SECTIONS.map((sec) => (
+                <optgroup key={sec.id} label={sec.title}>
+                  {DOCUMENT_CATALOGUE.filter((c) => c.section === sec.id).map((c) => (
+                    <option key={c.id} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
 
-            {DOC_CATEGORIES.map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setCategoryFilter(cat)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                  categoryFilter === cat
-                    ? "bg-[#3B82F6] text-white shadow-sm"
-                    : "text-slate-600 dark:text-[#9CA3AF] hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-
+            <div className="hidden lg:flex items-center gap-1.5">
+              {["All", "Final Hospital Bill", "Discharge Summary", "Duly Filled Claim Form", "KYC"].map((label) => {
+                const isActive = label === "All" ? categoryFilter === "All" : categoryFilter.toLowerCase().includes(label.toLowerCase());
+                return (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      if (label === "All") setCategoryFilter("All");
+                      else {
+                        const found = DOCUMENT_CATALOGUE.find((c) => c.name.toLowerCase().includes(label.toLowerCase()));
+                        if (found) setCategoryFilter(found.name);
+                      }
+                    }}
+                    className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                      isActive
+                        ? "bg-[#3B82F6] text-white"
+                        : "bg-slate-100 dark:bg-[#0B0F17] text-slate-600 dark:text-[#9CA3AF] hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -294,7 +286,37 @@ function DocumentsPage() {
 
               <tbody className="divide-y divide-slate-200 dark:divide-[#1F2937] text-xs">
 
-                {filtered.map((doc) => (
+                {loading ? (
+                  <tr>
+                    <td colSpan={7} className="py-12 text-center text-slate-500">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <Loader2 className="size-6 animate-spin text-[#3B82F6]" />
+                        <span className="text-xs font-semibold">Loading documents vault from backend...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-12 text-center text-slate-500">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <Inbox className="size-8 text-slate-400" />
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">No documents found in vault</p>
+                        <p className="text-xs text-slate-500 dark:text-[#9CA3AF] max-w-sm">
+                          {search || categoryFilter !== "All"
+                            ? "No documents match the current filter criteria."
+                            : "No claim documents have been uploaded to the active workspace yet."}
+                        </p>
+                        <Link
+                          to="/claims/new"
+                          className="mt-2 inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-4 py-2 text-xs font-semibold text-white shadow-md shadow-[#3B82F6]/30"
+                        >
+                          Create Claim & Upload Documents
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((doc) => (
 
                   <tr
                     key={doc.id}
@@ -330,7 +352,17 @@ function DocumentsPage() {
                     </td>
 
                     <td className="px-6 py-4 font-mono font-bold text-[#3B82F6]">
-                      {doc.claimId}
+                      {doc.claimUuid ? (
+                        <Link
+                          to="/claims/$claimId"
+                          params={{ claimId: doc.claimUuid }}
+                          className="hover:underline"
+                        >
+                          {doc.claimId}
+                        </Link>
+                      ) : (
+                        doc.claimId
+                      )}
                     </td>
 
                     <td className="px-6 py-4">
@@ -361,16 +393,27 @@ function DocumentsPage() {
 
                       <div className="flex items-center justify-end gap-2">
 
-                        <button
-                          onClick={() =>
-                            toast.info(
-                              `Viewing ${doc.name} preview`
-                            )
-                          }
-                          className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#3B82F6]"
-                        >
-                          <Eye className="size-4" />
-                        </button>
+                        {doc.claimUuid ? (
+                          <Link
+                            to="/claims/$claimId"
+                            params={{ claimId: doc.claimUuid }}
+                            className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#3B82F6] transition"
+                            title="Inspect Document in Claim Dossier"
+                          >
+                            <Eye className="size-4" />
+                          </Link>
+                        ) : (
+                          <button
+                            onClick={() =>
+                              toast.info(
+                                `Viewing ${doc.name} metadata`
+                              )
+                            }
+                            className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#3B82F6]"
+                          >
+                            <Eye className="size-4" />
+                          </button>
+                        )}
 
                         <button
                           onClick={() =>
@@ -389,7 +432,7 @@ function DocumentsPage() {
 
                   </tr>
 
-                ))}
+                )))}
 
               </tbody>
 

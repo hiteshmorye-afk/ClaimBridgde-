@@ -41,6 +41,17 @@ class User(Base):
         nullable=False,
     )
 
+    organization = Column(
+        String(150),
+        nullable=True,
+    )
+
+    portal = Column(
+        String(50),
+        server_default=text("'Hospital'"),
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime,
         server_default=func.current_timestamp(),
@@ -155,6 +166,11 @@ class Claim(Base):
         UUID(as_uuid=True),
         ForeignKey("policies.id"),
         nullable=False,
+    )
+
+    hospital_name = Column(
+        String(150),
+        nullable=True,
     )
 
     admission_date = Column(Date, nullable=True)

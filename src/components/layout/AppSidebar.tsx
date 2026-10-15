@@ -38,27 +38,33 @@ export function AppSidebar({
   const currentPath = routerState.location.pathname;
   const { theme, toggleTheme, isDark } = useTheme();
 
-  const user = getCurrentUser();
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const user = mounted ? getCurrentUser() : null;
   const activeRole = user?.role || role || "Coordinator";
-  const activeName = user?.name || userName || "23102030";
-  const activeEmail = user?.email || userEmail || "23102030@apsit.edu.in";
-  const isHospitalUser = (user?.portal || "Hospital") === "Hospital";
+  const activeName = user?.name || userName || "Coordinator";
+  const activeEmail = user?.email || userEmail || "coordinator@claimbridge.internal";
+  const isHospitalUser = mounted ? (user?.portal || "Hospital") === "Hospital" : true;
 
   const allNav = [
-    { label: "Dashboard", href: "/", icon: LayoutDashboard, tpaOnly: true },
-    { label: "Claims", href: "/claims", icon: FileSpreadsheet, badge: "28,218" },
     { label: "New Claim", href: "/claims/new", icon: Plus, isAction: true },
     { label: "Documents", href: "/documents", icon: FileText },
-    { label: "AI Analysis", href: "/ai-analysis", icon: BrainCircuit, badge: "AI Core" },
-    { label: "Claim Readiness", href: "/claims/CLM-TEST-001", icon: Zap, highlight: true },
-    { label: "Human Review", href: "/review", icon: UserCheck, badge: "342" },
+    { label: "Document Analysis", href: "/ai-analysis", icon: BrainCircuit, badge: "AI Core" },
+    { label: "Claim Readiness", href: "/claims", icon: Zap, highlight: true },
+    { label: "Human Review", href: "/review", icon: UserCheck, badge: "Queue" },
     { label: "TPA / Pre-Auth", href: "/tpa-integration", icon: Link2, placeholder: true, tpaOnly: true },
-    { label: "Analytics", href: "/analytics", icon: BarChart3, tpaOnly: true },
     { label: "Reports", href: "/reports", icon: FileCheck },
     { label: "Settings", href: "/settings", icon: Settings },
   ];
 
-  const mainNav = allNav.filter((item) => !isHospitalUser || !item.tpaOnly);
+  const isReviewerOrAdmin = !isHospitalUser || activeRole.toLowerCase().includes("admin") || activeRole.toLowerCase().includes("tpa") || activeRole.toLowerCase().includes("reviewer");
+  const mainNav = allNav.filter((item) => {
+    if (item.tpaOnly && !isReviewerOrAdmin) return false;
+    return true;
+  });
 
   const handleSignOut = () => {
     logoutUser();
@@ -90,7 +96,7 @@ export function AppSidebar({
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         
         <div className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Dashboard
+          Claim Operations
         </div>
 
         {mainNav.map((item) => {

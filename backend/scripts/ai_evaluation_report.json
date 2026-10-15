@@ -1,0 +1,158 @@
+{
+  "timestamp": "2026-10-15 07:22:12",
+  "evaluation_duration_seconds": 0.051,
+  "document_classifier": {
+    "total_samples": 15,
+    "correct": 15,
+    "accuracy_pct": 100.0,
+    "avg_latency_ms": 2.784,
+    "per_class": {
+      "claim_form": {
+        "predicted": "claim_form",
+        "raw_predicted": "claim_form",
+        "confidence": 0.94,
+        "correct": true,
+        "latency_ms": 18.618
+      },
+      "insurance_card": {
+        "predicted": "insurance_card",
+        "raw_predicted": "insurance_card",
+        "confidence": 0.97,
+        "correct": true,
+        "latency_ms": 1.449
+      },
+      "identity_proof": {
+        "predicted": "identity_proof",
+        "raw_predicted": "identity_proof",
+        "confidence": 0.75,
+        "correct": true,
+        "latency_ms": 1.4
+      },
+      "bank_proof": {
+        "predicted": "bank_proof",
+        "raw_predicted": "bank_proof",
+        "confidence": 0.84,
+        "correct": true,
+        "latency_ms": 1.194
+      },
+      "discharge_summary": {
+        "predicted": "discharge_summary",
+        "raw_predicted": "discharge_summary",
+        "confidence": 0.78,
+        "correct": true,
+        "latency_ms": 1.917
+      },
+      "consultation_letter": {
+        "predicted": "consultation_letter",
+        "raw_predicted": "prescription",
+        "confidence": 0.79,
+        "correct": true,
+        "latency_ms": 1.45
+      },
+      "diagnostic_report": {
+        "predicted": "diagnostic_report",
+        "raw_predicted": "lab_report",
+        "confidence": 0.68,
+        "correct": true,
+        "latency_ms": 1.858
+      },
+      "hospital_bill": {
+        "predicted": "hospital_bill",
+        "raw_predicted": "hospital_bill",
+        "confidence": 0.79,
+        "correct": true,
+        "latency_ms": 1.863
+      },
+      "payment_receipt": {
+        "predicted": "payment_receipt",
+        "raw_predicted": "payment_receipt",
+        "confidence": 0.78,
+        "correct": true,
+        "latency_ms": 1.554
+      },
+      "pharmacy_bill": {
+        "predicted": "pharmacy_bill",
+        "raw_predicted": "pharmacy_bill",
+        "confidence": 0.85,
+        "correct": true,
+        "latency_ms": 3.329
+      },
+      "fir_mlc": {
+        "predicted": "fir_mlc",
+        "raw_predicted": "fir_mlc",
+        "confidence": 0.98,
+        "correct": true,
+        "latency_ms": 1.596
+      },
+      "implant_invoice": {
+        "predicted": "implant_invoice",
+        "raw_predicted": "implant_invoice",
+        "confidence": 0.82,
+        "correct": true,
+        "latency_ms": 1.512
+      },
+      "ambulance_receipt": {
+        "predicted": "ambulance_receipt",
+        "raw_predicted": "ambulance_receipt",
+        "confidence": 0.69,
+        "correct": true,
+        "latency_ms": 1.543
+      },
+      "pre_authorization": {
+        "predicted": "pre_authorization",
+        "raw_predicted": "pre_authorization",
+        "confidence": 0.71,
+        "correct": true,
+        "latency_ms": 1.309
+      },
+      "other_medical_doc": {
+        "predicted": "other_medical_doc",
+        "raw_predicted": "other_medical_doc",
+        "confidence": 0.78,
+        "correct": true,
+        "latency_ms": 1.161
+      }
+    }
+  },
+  "information_extractor": {
+    "clean_bill_reconciled": true,
+    "clean_calculated_total": 75000.0,
+    "mismatched_bill_detected": true,
+    "mismatch_discrepancy_msg": [
+      "Bill total discrepancy: Printed total (100,000.00) does not match itemized sum + tax - discount (65,000.00). Variance: 35,000.00."
+    ],
+    "sensitive_masking_compliant": true,
+    "aadhaar_sample": "XXXX-XXXX-9012",
+    "pan_sample": "ABCDE****F",
+    "bank_sample": "XXXXXX0123",
+    "passport_sample": "Z1****67"
+  },
+  "medical_intelligence": {
+    "diagnosis_found": true,
+    "diagnosis": "Acute Appendicitis",
+    "procedure_found": true,
+    "procedure": "Laparoscopic Appendectomy",
+    "medical_terms_count": 5,
+    "medical_services_count": 1,
+    "risk_score": 30,
+    "confidence_score": 100.0,
+    "status": "Analyzed"
+  },
+  "policy_intelligence_rag": {
+    "covered_policy_status": "Potentially Covered",
+    "covered_clauses_retrieved": 3,
+    "excluded_policy_status": "Relevant Exclusion Detected",
+    "excluded_exclusions": [
+      "cosmetic"
+    ]
+  },
+  "readiness_and_confidence": {
+    "expected_score": 87.0,
+    "formula_computed_score": 87.0,
+    "weights_exact_match": true,
+    "readiness_status": "Ready for Next Stage",
+    "confidence_score": 88.2,
+    "confidence_level": "High",
+    "processing_route": "Auto Processing"
+  }
+}

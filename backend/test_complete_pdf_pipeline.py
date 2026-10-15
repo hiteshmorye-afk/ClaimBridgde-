@@ -451,8 +451,9 @@ def test_18_db_persistence_and_retry():
         "patientName": "Retry Test Patient",
         "patientAge": 52,
         "hospital": "Chong Hua Hospital",
-        "policyNumber": f"POL-RETRY-{uuid.uuid4().hex[:6].upper()}",
+        "policyNumber": f"88{uuid.uuid4().int % 100000000:08d}",
         "insuranceProvider": "Pacific Healthcare",
+        "diagnosis": "Acute Inpatient Care",
         "claimedAmount": 75000.0,
         "admissionDate": "2026-08-01",
         "dischargeDate": "2026-08-05",
@@ -523,11 +524,12 @@ def test_19_api_errors_and_validation():
 def test_20_end_to_end_api_pipeline():
     # Create claim
     c_res = client.post("/claims", json={
-        "patientName": "E2E Final Patient",
+        "patientName": "Edward Final Patient",
         "patientAge": 38,
         "hospital": "Chong Hua Hospital",
-        "policyNumber": f"POL-E2E-{uuid.uuid4().hex[:6].upper()}",
+        "policyNumber": f"77{uuid.uuid4().int % 100000000:08d}",
         "insuranceProvider": "Pacific Healthcare",
+        "diagnosis": "Acute Appendicitis",
         "claimedAmount": 92000.0,
         "admissionDate": "2026-09-10",
         "dischargeDate": "2026-09-14",
@@ -538,7 +540,7 @@ def test_20_end_to_end_api_pipeline():
     p = TMP_DIR / "e2e_bill.pdf"
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    page.insert_text((50, 80), "CHONG HUA HOSPITAL\nSTATEMENT OF ACCOUNT\nPATIENT NAME: E2E Final Patient\nADMISSION DATE: 10.09.2026\nDISCHARGE DATE: 14.09.2026\nDIAGNOSIS: ACUTE APPENDICITIS\nTOTAL CHARGES: 92000.00", fontsize=12)
+    page.insert_text((50, 80), "CHONG HUA HOSPITAL\nSTATEMENT OF ACCOUNT\nPATIENT NAME: Edward Final Patient\nADMISSION DATE: 10.09.2026\nDISCHARGE DATE: 14.09.2026\nDIAGNOSIS: ACUTE APPENDICITIS\nTOTAL CHARGES: 92000.00", fontsize=12)
     doc.save(str(p))
     doc.close()
 
@@ -559,7 +561,7 @@ def test_20_end_to_end_api_pipeline():
     # Fetch document OCR endpoint
     ocr_ep = client.get(f"/documents/{doc_id}/ocr")
     assert ocr_ep.status_code == 200
-    assert ocr_ep.json()["extractedFields"]["patient_name"] == "E2E Final Patient"
+    assert ocr_ep.json()["extractedFields"]["patient_name"] == "Edward Final Patient"
 
     TestSuite.record(20, "End-to-End API Pipeline", "PASSED", f"Classified: {pipeline_res['classification']['document_type']}, Readiness: {pipeline_res['claim_readiness']['readiness_score']}%")
 

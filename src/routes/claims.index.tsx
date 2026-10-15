@@ -61,6 +61,8 @@ function ClaimsIndexPage() {
       case "Ready for Submission":
       case "Approved":
         return "border-[#10B981]/40 bg-[#10B981]/10 text-[#10B981]";
+      case "Rejected":
+        return "border-[#EF4444]/40 bg-[#EF4444]/10 text-[#EF4444]";
       case "Needs Review":
         return "border-[#F59E0B]/40 bg-[#F59E0B]/10 text-[#F59E0B]";
       case "Under Analysis":
@@ -119,7 +121,7 @@ function ClaimsIndexPage() {
           </div>
 
           <div className="flex flex-wrap gap-1.5 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-100 dark:bg-[#0B0F17] p-1">
-            {["All", "Ready for Submission", "Needs Review", "Under Analysis"].map((st) => (
+            {["All", "Ready for Submission", "Needs Review", "Under Analysis", "Approved", "Rejected"].map((st) => (
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}

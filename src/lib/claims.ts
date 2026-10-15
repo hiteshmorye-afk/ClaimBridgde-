@@ -1,6 +1,32 @@
 import { useSyncExternalStore } from "react";
 
 export const DOC_CATEGORIES = [
+  // Core Claim Documents
+  "Duly Filled Claim Form",
+  "Health Insurance Card / Policy Schedule",
+  "KYC / Identity Proof",
+  "Bank Details Proof",
+
+  // Medical & Hospitalisation Documents
+  "Discharge Summary / Discharge Card",
+  "Doctor's Consultation Papers & Prescriptions",
+  "Investigation / Diagnostic Reports",
+
+  // Financial & Billing Documents
+  "Final Hospital Bill (Itemized / Summary)",
+  "Payment Receipts",
+  "Pharmacy & Medical Store Bills",
+
+  // Special Circumstances
+  "Medico-Legal Certificate (MLC) / FIR",
+  "Implant Invoice & Sticker / Outer Pouch",
+  "Ambulance Receipt / Certificate",
+  "Pre-Authorization Approval Letter / Query Sheet",
+
+  // Other Supporting Documents
+  "Other Supporting Documents",
+
+  // Backward compatible legacy aliases
   "Hospital Bill",
   "Discharge Summary",
   "Insurance Card",
@@ -15,15 +41,17 @@ export type DocCategory = (typeof DOC_CATEGORIES)[number];
 export const PIPELINE_STAGES = [
   "01 Secure Document Intake",
   "02 Image Preprocessing",
-  "03 OCR Extraction",
+  "03 OCR & Text Extraction",
   "04 Document Classification",
   "05 Information Extraction",
   "06 Medical Intelligence",
   "07 Policy Intelligence (RAG)",
-  "08 Cross-Validation Engine",
+  "08 Validation Engine",
   "09 Claim Readiness Engine",
-  "10 Confidence Scoring Engine",
-  "11 Final Decision",
+  "10 Confidence Engine",
+  "11 Automated Processing / Human Review",
+  "12 Final Claim Decision",
+  "13 Claim History",
 ] as const;
 
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
@@ -31,11 +59,16 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 export type ClaimStatus = "Under Analysis" | "Ready for Submission" | "Needs Review" | "Approved" | "Rejected";
 
 export type ClaimDocument = {
-  category: DocCategory;
+  id?: string;
+  category: DocCategory | string;
   fileName: string;
   status: "Verified" | "Processing" | "Missing" | "Mismatch";
   note?: string;
   fileSize?: string;
+  file?: File;
+  detectedCategory?: string;
+  confidence?: number;
+  extractedFields?: Record<string, any>;
 };
 
 export type MedicalServiceItem = {
@@ -89,7 +122,15 @@ export type Claim = {
   policyConfidence: number; // e.g. 68.51%
   validationReadiness: number; // e.g. 100%
   overallConfidence: number; // e.g. 83.36% (Medium)
-  routeDecision: "Auto Approval Eligible" | "Human Review Required" | "Escalation Flagged";
+  claimNumber?: string;
+  routeReasons?: string[];
+  pipelineStages?: any[];
+  fieldValidationTable?: any[];
+  medicalEvidence?: any;
+  policyEvidence?: any;
+  readinessBreakdown?: any;
+  confidenceDetails?: any;
+  history?: any[];
 
   documents: ClaimDocument[];
   findings: { label: string; detail: string; severity: "ok" | "warn" | "error" }[];
@@ -382,7 +423,7 @@ const seed: Claim[] = [
   },
 ];
 
-let claimsState: Claim[] = [...seed];
+let claimsState: Claim[] = [];
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -396,50 +437,73 @@ export function useClaims(): Claim[] {
       return () => listeners.delete(listener);
     },
     () => claimsState,
-    () => seed
+    () => []
   );
 }
 
 export function convertApiClaimToClaim(apiClaim: any): Claim {
+  const readiness = Number(apiClaim.readiness) || 0;
   return {
     id: apiClaim.id,
+    claimNumber: apiClaim.claimNumber || apiClaim.id,
     patientName: apiClaim.patientName || "Patient",
-    patientAge: apiClaim.patientAge || 45,
-    hospital: apiClaim.hospital || "Chong Hua Hospital",
-    policyNumber: apiClaim.policyNumber || "POL-STANDARD",
-    insuranceProvider: apiClaim.insuranceProvider || "Pacific Healthcare TPA",
+    patientAge: Number(apiClaim.patientAge) || 0,
+    hospital: apiClaim.hospital || "",
+    policyNumber: apiClaim.policyNumber || "",
+    insuranceProvider: apiClaim.insuranceProvider || "",
     admissionDate: apiClaim.admissionDate || "",
     dischargeDate: apiClaim.dischargeDate || "",
-    diagnosis: apiClaim.diagnosis || "Medical Assessment",
-    claimedAmount: apiClaim.claimedAmount || 0,
+    diagnosis: apiClaim.diagnosis || "",
+    claimedAmount: Number(apiClaim.claimedAmount) || 0,
     status: (apiClaim.status as any) || "Under Analysis",
     stage: (apiClaim.stage as any) || "01 Secure Document Intake",
-    readiness: apiClaim.readiness || 0,
-    ocrConfidence: apiClaim.ocrConfidence || 98.93,
-    classification: "Multi-Document Intake",
-    medicalRiskScore: apiClaim.medicalRisk || 20,
-    medicalConfidence: apiClaim.medicalConfidence || 85,
-    policyConfidence: apiClaim.policyConfidence || 90,
-    validationReadiness: apiClaim.validationReadiness || apiClaim.readiness || 85,
-    overallConfidence: apiClaim.overallConfidence || apiClaim.readiness || 85,
-    routeDecision: (apiClaim.readiness || 0) >= 90 ? "Auto Approval Eligible" : "Human Review Required",
+    readiness,
+    ocrConfidence: Number(apiClaim.ocrConfidence) || 0,
+    classification: (apiClaim.documents && apiClaim.documents[0]?.category) || "Document Intake",
+    medicalRiskScore: Number(apiClaim.medicalRisk) || 0,
+    medicalConfidence: Number(apiClaim.medicalConfidence) || 0,
+    policyConfidence: Number(apiClaim.policyConfidence) || 0,
+    validationReadiness: Number(apiClaim.validationReadiness) || readiness,
+    overallConfidence: Number(apiClaim.overallConfidence) || readiness,
+    routeDecision: apiClaim.routeDecision || (readiness >= 85 ? "Auto Approval Eligible" : "Human Review Required"),
+    routeReasons: apiClaim.routeReasons || [],
     documents: (apiClaim.documents || []).map((d: any) => ({
-      category: d.category || "Hospital Bill",
+      id: d.id,
+      category: d.category || "Document",
+      rawCategory: d.rawCategory,
       fileName: d.fileName,
       status: d.status || "Verified",
+      fileSize: d.fileSize || "1.2 MB",
+      ocrConfidence: d.ocrConfidence,
+      extractedFields: d.extractedFields,
     })),
     findings: apiClaim.findings || [],
     medicalServices: [],
-    policyClauses: [],
+    policyClauses: (apiClaim.policyEvidence?.retrievedClauses || []).map((c: any, idx: number) => ({
+      id: `P-${idx + 1}`,
+      section: c.section || "Clause",
+      clauseTitle: c.clauseTitle || c.title || "Policy Rule",
+      textSnippet: c.textSnippet || c.text || "",
+      status: (c.confidence || c.similarity || 0) >= 0.8 ? "Verified" : "Conditional",
+      confidence: Math.round(((c.confidence || c.similarity || 0) <= 1 ? (c.confidence || c.similarity || 0) * 100 : (c.confidence || 0))),
+    })),
     ocrLines: [],
+    pipelineStages: apiClaim.pipelineStages,
+    fieldValidationTable: apiClaim.fieldValidationTable,
+    medicalEvidence: apiClaim.medicalEvidence,
+    policyEvidence: apiClaim.policyEvidence,
+    readinessBreakdown: apiClaim.readinessBreakdown,
+    confidenceDetails: apiClaim.confidenceDetails,
+    history: apiClaim.history,
   };
 }
 
 export function syncClaimsFromBackend(backendClaims: any[]) {
-  const converted = backendClaims.map(convertApiClaimToClaim);
-  const convertedIds = new Set(converted.map((c) => c.id));
-  const remainingSeeds = seed.filter((s) => !convertedIds.has(s.id));
-  claimsState = [...converted, ...remainingSeeds];
+  if (Array.isArray(backendClaims) && backendClaims.length > 0) {
+    claimsState = backendClaims.map(convertApiClaimToClaim);
+  } else {
+    claimsState = [];
+  }
   notify();
 }
 

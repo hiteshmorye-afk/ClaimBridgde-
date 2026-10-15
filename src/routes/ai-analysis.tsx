@@ -15,12 +15,12 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { MedicalIntelligence } from "@/components/pipeline/MedicalIntelligence";
 import { PolicyRagPanel } from "@/components/pipeline/PolicyRagPanel";
 import { ReadinessGauge } from "@/components/pipeline/ReadinessGauge";
-import { getClaim } from "@/lib/claims";
+import { getClaim, useClaims } from "@/lib/claims";
 
 export const Route = createFileRoute("/ai-analysis")({
   head: () => ({
     meta: [
-      { title: "AI Analysis Core — ClaimBridge" },
+      { title: "Document Analysis — ClaimBridge" },
       {
         name: "description",
         content: "Deep tech AI medical intelligence, ICD-10 coding and RAG policy verification engine.",
@@ -31,8 +31,12 @@ export const Route = createFileRoute("/ai-analysis")({
 });
 
 function AiAnalysisPage() {
-  const sampleClaim = getClaim("CLM-TEST-001") || {
-    id: "CLM-TEST-001",
+  const claims = useClaims();
+  const [selectedClaimId, setSelectedClaimId] = React.useState(claims[0]?.id || "");
+  const activeClaim = (selectedClaimId ? getClaim(selectedClaimId) : null) || claims[0];
+
+  const sampleClaim = activeClaim || {
+    id: "DEMO-ARCHITECTURE-BLUEPRINT",
     diagnosis: "Acute Gastroenteritis & Severe Dehydration (ICD-10: A09)",
     medicalRiskScore: 50,
     medicalConfidence: 70,
@@ -46,18 +50,21 @@ function AiAnalysisPage() {
 
   return (
     <AppLayout
-      title="Autonomous AI Analysis Engine"
-      breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "AI Analysis" }]}
+      title="Document Analysis Engine"
+      breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "Document Analysis" }]}
     >
       <div className="space-y-8">
         
         {/* HEADER HERO BANNER */}
         <div className="flex flex-col justify-between gap-6 rounded-2xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] p-6 shadow-xl lg:flex-row lg:items-center">
           <div className="space-y-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="flex size-2 rounded-full bg-[#8B5CF6] animate-ping" />
               <span className="font-mono text-xs font-semibold text-[#8B5CF6] uppercase tracking-wider">
                 ClaimBridge Core Intelligence
+              </span>
+              <span className="rounded-full border border-purple-500/30 bg-purple-500/10 px-2.5 py-0.5 font-mono text-[10px] text-purple-400">
+                {activeClaim ? `Claim: ${activeClaim.id}` : "Architecture Demonstration"}
               </span>
             </div>
             <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white sm:text-3xl">

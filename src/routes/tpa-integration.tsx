@@ -4,6 +4,8 @@ import { Link2, Activity, ShieldCheck, CheckCircle2, Send, Database, Server } fr
 import { AppLayout } from "@/components/layout/AppLayout";
 import { exportToTPA } from "@/api/integrations";
 
+import { useClaims } from "@/lib/claims";
+
 export const Route = createFileRoute("/tpa-integration")({
   head: () => ({
     meta: [
@@ -18,6 +20,9 @@ export const Route = createFileRoute("/tpa-integration")({
 });
 
 function TpaIntegrationPage() {
+  const claims = useClaims();
+  const activeClaimId = claims[0]?.claimNumber || claims[0]?.id || "CLM-EXPORT-GATEWAY";
+
   const tpaGateways = [
     { name: "Pacific Healthcare TPA", status: "Connected", protocol: "HL7 FHIR v4", latency: "142 ms" },
     { name: "Star Health Gateway", status: "Connected", protocol: "REST / ISO20022", latency: "185 ms" },
@@ -50,7 +55,7 @@ function TpaIntegrationPage() {
           </div>
 
           <button
-            onClick={() => exportToTPA("CLM-TEST-001", "Pacific Healthcare TPA")}
+            onClick={() => exportToTPA(activeClaimId, "Pacific Healthcare TPA")}
             className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-5 text-xs font-bold text-white shadow-lg shadow-[#3B82F6]/30 hover:shadow-xl transition"
           >
             <Send className="size-4" /> Trigger Test TPA Export Payload

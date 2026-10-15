@@ -2,7 +2,7 @@ import json
 import uuid
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
@@ -10,10 +10,13 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
 )
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from .auth import get_current_user_optional
 from .database import get_db
 from .models import (
     AIAnalysis,
@@ -21,6 +24,8 @@ from .models import (
     ClaimDocument,
     DocumentExtraction,
     MedicalAnalysis,
+    Policy,
+    User,
     VerificationResult,
 )
 from .pipeline import process_document
@@ -77,6 +82,125 @@ ALLOWED_EXTENSIONS = {
     ".jpeg",
     ".pdf",
 }
+
+
+# =========================================================
+# LIST DOCUMENTS (SCOPED BY ORGANIZATION)
+# =========================================================
+
+@router.get("")
+def list_documents(
+    search: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    claim_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    List uploaded documents with organization-level scoping:
+    - Hospital coordinators only see documents of their hospital.
+    - TPA reviewers only see documents of their assigned insurance provider.
+    - Admins see all documents.
+    """
+    query = (
+        db.query(ClaimDocument)
+        .join(Claim, ClaimDocument.claim_id == Claim.id)
+        .join(Policy, Claim.policy_id == Policy.id)
+    )
+
+    if user:
+        if user.role == "Coordinator" or user.portal == "Hospital":
+            user_org = (user.organization or "").strip()
+            if user_org:
+                query = query.filter(
+                    or_(
+                        Claim.hospital_name.ilike(f"%{user_org}%"),
+                        Claim.created_by == user.id,
+                    )
+                )
+        elif user.role == "Reviewer" or user.portal == "TPA":
+            user_org = (user.organization or "").strip()
+            if user_org:
+                query = query.filter(
+                    Policy.insurance_provider.ilike(f"%{user_org}%")
+                )
+
+    if claim_id:
+        try:
+            claim_uuid = uuid.UUID(claim_id)
+            query = query.filter(ClaimDocument.claim_id == claim_uuid)
+        except ValueError:
+            query = query.filter(Claim.claim_number.ilike(claim_id.strip()))
+
+    if category and category != "All":
+        cat_clean = category.strip()
+        query = query.filter(
+            or_(
+                ClaimDocument.document_type.ilike(f"%{cat_clean}%"),
+                ClaimDocument.document_type.ilike(f"%{cat_clean.replace(' ', '_')}%"),
+            )
+        )
+
+    docs = query.order_by(ClaimDocument.uploaded_at.desc()).all()
+
+    results = []
+    for doc in docs:
+        claim_obj = db.query(Claim).filter(Claim.id == doc.claim_id).first()
+        extraction = (
+            db.query(DocumentExtraction)
+            .filter(DocumentExtraction.document_id == doc.id)
+            .first()
+        )
+
+        size_str = "—"
+        if doc.file_path:
+            p = Path(doc.file_path)
+            if p.exists():
+                try:
+                    bytes_size = p.stat().st_size
+                    if bytes_size >= 1024 * 1024:
+                        size_str = f"{bytes_size / (1024 * 1024):.1f} MB"
+                    else:
+                        size_str = f"{max(1, bytes_size // 1024)} KB"
+                except Exception:
+                    pass
+
+        raw_cat = doc.document_type or "Document"
+        display_cat = raw_cat.replace("_", " ").title()
+
+        conf = 0.0
+        if extraction and extraction.ocr_confidence is not None:
+            c = float(extraction.ocr_confidence)
+            if 0 < c <= 1.0:
+                conf = round(c * 100.0, 2)
+            else:
+                conf = round(c, 2)
+
+        if search:
+            q = search.lower().strip()
+            claim_num = claim_obj.claim_number.lower() if claim_obj else ""
+            if (
+                q not in doc.file_name.lower()
+                and q not in raw_cat.lower()
+                and q not in display_cat.lower()
+                and q not in claim_num
+            ):
+                continue
+
+        results.append({
+            "id": str(doc.id),
+            "name": doc.file_name,
+            "category": display_cat,
+            "rawCategory": raw_cat,
+            "claimId": claim_obj.claim_number if claim_obj else str(doc.claim_id),
+            "claimUuid": str(doc.claim_id),
+            "confidence": conf,
+            "status": "Verified" if doc.processing_status == "Completed" else ("Failed" if doc.processing_status == "Failed" else "Processing"),
+            "size": size_str,
+            "date": doc.uploaded_at.strftime("%d.%m.%Y") if doc.uploaded_at else "",
+        })
+
+    return results
 
 
 # =========================================================

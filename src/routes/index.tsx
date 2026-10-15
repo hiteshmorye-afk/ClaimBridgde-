@@ -35,8 +35,9 @@ import {
 } from "recharts";
 
 import { AppLayout } from "@/components/layout/AppLayout";
-import { useClaims, formatINR } from "@/lib/claims";
+import { useClaims, formatINR, syncClaimsFromBackend } from "@/lib/claims";
 import { getCurrentUser } from "@/api/auth";
+import { fetchClaims } from "@/api/claims";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -79,6 +80,14 @@ function DashboardPage() {
     if (user?.portal === "Hospital") {
       navigate({ to: "/claims" });
     }
+
+    fetchClaims()
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          syncClaimsFromBackend(data);
+        }
+      })
+      .catch((err) => console.warn("Could not sync claims:", err));
   }, [navigate]);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -136,11 +145,11 @@ function DashboardPage() {
 
           <div className="flex items-center gap-3">
             <Link
-              to="/claims/CLM-TEST-001"
+              to="/claims"
               className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#06B6D4]/50 bg-[#06B6D4]/10 px-4 text-xs font-semibold text-[#06B6D4] transition hover:bg-[#06B6D4]/20 shadow-[0_0_15px_rgba(6,182,212,0.2)]"
             >
               <Zap className="size-4" />
-              Inspect CLM-TEST-001 Demo
+              Claim Readiness Vault
             </Link>
 
             <Link
@@ -415,7 +424,7 @@ function DashboardPage() {
                           params={{ claimId: claim.id }}
                           className="font-mono font-bold text-[#3B82F6] hover:underline"
                         >
-                          {claim.id}
+                          {claim.claimNumber || claim.id}
                         </Link>
                         <p className="text-[10px] text-[#9CA3AF]">{claim.stage}</p>
                       </td>

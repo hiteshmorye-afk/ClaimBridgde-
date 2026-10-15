@@ -314,7 +314,7 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     <span className="size-2 rounded-full bg-[#3B82F6] animate-ping" />
                     <span className="text-slate-800 dark:text-white font-semibold">Live Pipeline Stream</span>
                   </div>
-                  <span className="text-xs font-mono text-[#06B6D4]">CLM-TEST-001</span>
+                  <span className="text-xs font-mono text-[#06B6D4]">CLAIMBRIDGE-AI</span>
                 </div>
 
                 {/* Animated ECG Pulse Wave Graph */}

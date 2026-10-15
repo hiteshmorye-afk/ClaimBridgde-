@@ -29,6 +29,38 @@ export interface DocumentUploadResult {
   message: string;
 }
 
+export interface VaultDocument {
+  id: string;
+  name: string;
+  category: string;
+  rawCategory?: string;
+  claimId: string;
+  claimUuid?: string;
+  confidence: number;
+  status: string;
+  size: string;
+  date: string;
+}
+
+/**
+ * Fetch all documents with optional filters and organization scoping.
+ */
+export async function fetchDocuments(params?: {
+  search?: string;
+  category?: string;
+  claimId?: string;
+}): Promise<VaultDocument[]> {
+  const query = new URLSearchParams();
+  if (params?.search) query.append("search", params.search);
+  if (params?.category && params.category !== "All") query.append("category", params.category);
+  if (params?.claimId) query.append("claim_id", params.claimId);
+
+  const qs = query.toString();
+  const url = qs ? `/documents?${qs}` : "/documents";
+
+  const response = await apiFetch<VaultDocument[]>(url);
+  return response.data || [];
+}
 
 /**
  * Upload a document for an existing ClaimBridge claim.

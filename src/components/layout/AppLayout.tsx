@@ -10,15 +10,21 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ children, title, breadcrumbs }: AppLayoutProps) {
-  const user = getCurrentUser();
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const user = mounted ? getCurrentUser() : null;
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground font-sans selection:bg-primary selection:text-white transition-colors duration-200">
       {/* Fixed Left Sidebar */}
       <AppSidebar
         role={user?.role || "Coordinator"}
-        userName={user?.name || "23102030"}
-        userEmail={user?.email || "23102030@apsit.edu.in"}
+        userName={user?.name || "Coordinator"}
+        userEmail={user?.email || "coordinator@claimbridge.internal"}
       />
 
       {/* Main Content Area */}

@@ -42,3 +42,18 @@ __pycache__/
 
 # ClaimBridge uploaded documents
 backend/uploads/
+# Python test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+backend/test_tmp_artifacts/
+
+# Environment and secrets
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases and private uploads
+*.sqlite
+*.sqlite3
