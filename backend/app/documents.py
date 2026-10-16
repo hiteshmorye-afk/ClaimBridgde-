@@ -13,13 +13,19 @@ from fastapi import (
     Query,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .auth import get_current_user_optional
+from .auth import (
+    require_document_reader,
+    require_claimant,
+)
+from .claims import apply_claim_scope, check_claim_access
 from .database import get_db
 from .models import (
     AIAnalysis,
+    AuditEvent,
     Claim,
     ClaimDocument,
     DocumentExtraction,
@@ -94,7 +100,7 @@ def list_documents(
     category: Optional[str] = Query(None),
     claim_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user_optional),
+    user: User = Depends(require_document_reader),
 ):
     """
     List uploaded documents with organization-level scoping:
@@ -103,27 +109,11 @@ def list_documents(
     - Admins see all documents.
     """
     query = (
-        db.query(ClaimDocument)
+        db.query(ClaimDocument, Claim, Policy)
         .join(Claim, ClaimDocument.claim_id == Claim.id)
         .join(Policy, Claim.policy_id == Policy.id)
     )
-
-    if user:
-        if user.role == "Coordinator" or user.portal == "Hospital":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.filter(
-                    or_(
-                        Claim.hospital_name.ilike(f"%{user_org}%"),
-                        Claim.created_by == user.id,
-                    )
-                )
-        elif user.role == "Reviewer" or user.portal == "TPA":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.filter(
-                    Policy.insurance_provider.ilike(f"%{user_org}%")
-                )
+    query = apply_claim_scope(query, user)
 
     if claim_id:
         try:
@@ -144,8 +134,9 @@ def list_documents(
     docs = query.order_by(ClaimDocument.uploaded_at.desc()).all()
 
     results = []
-    for doc in docs:
-        claim_obj = db.query(Claim).filter(Claim.id == doc.claim_id).first()
+    for doc, claim_obj, policy_obj in docs:
+        if not check_claim_access(claim_obj, policy_obj, user):
+            continue
         extraction = (
             db.query(DocumentExtraction)
             .filter(DocumentExtraction.document_id == doc.id)
@@ -213,6 +204,7 @@ async def upload_document(
     category: str = Form("Auto-Detect"),
     claim_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    user: User = Depends(require_claimant),
 ):
     """
     Upload a document and associate it with
@@ -280,19 +272,29 @@ async def upload_document(
                 ),
             )
     else:
-        claim = (
-            db.query(Claim)
+        claims_query = (
+            db.query(Claim, Policy)
+            .join(Policy, Claim.policy_id == Policy.id)
             .order_by(Claim.created_at.desc())
-            .first()
         )
+        claims_query = apply_claim_scope(claims_query, user)
+        scoped_claim = claims_query.first()
+        claim = scoped_claim[0] if scoped_claim else None
         if not claim:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "No claim found to associate document with. "
+                    "No claim in your authorized organization was found to associate the document with. "
                     "Please specify claim_id or create a claim first."
                 ),
             )
+
+    claim_policy = db.query(Policy).filter(Policy.id == claim.policy_id).first()
+    if not claim_policy or not check_claim_access(claim, claim_policy, user):
+        raise HTTPException(
+            status_code=403,
+            detail="This claim is outside your authorized organization.",
+        )
 
     # -----------------------------------------------------
     # STEP 4 — CREATE DOCUMENT UUID
@@ -379,6 +381,14 @@ async def upload_document(
     try:
 
         db.add(document)
+        db.add(
+            AuditEvent(
+                event_type="document_uploaded",
+                actor_user_id=user.id,
+                claim_id=claim.id,
+                details={"document_id": str(document.id), "category": category},
+            )
+        )
 
         db.commit()
 
@@ -436,6 +446,7 @@ async def upload_document(
 def process_uploaded_document(
     document_id: str,
     db: Session = Depends(get_db),
+    user: User = Depends(require_claimant),
 ):
     """
     Run the existing ClaimBridge AI pipeline
@@ -499,6 +510,14 @@ def process_uploaded_document(
             detail="Document not found.",
         )
 
+    claim = db.query(Claim).filter(Claim.id == document.claim_id).first()
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first() if claim else None
+    if not claim or not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(
+            status_code=403,
+            detail="This document is outside your authorized organization.",
+        )
+
     # -----------------------------------------------------
     # STEP 3 — VERIFY FILE EXISTS
     # -----------------------------------------------------
@@ -545,6 +564,14 @@ def process_uploaded_document(
     # -----------------------------------------------------
 
     document.processing_status = "Processing"
+    db.add(
+        AuditEvent(
+            event_type="document_processing_started",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={"document_id": str(document.id)},
+        )
+    )
 
     db.commit()
 
@@ -566,17 +593,24 @@ def process_uploaded_document(
             ),
         )
 
-    except Exception as exc:
+    except Exception:
 
         document.processing_status = "Failed"
+        db.add(
+            AuditEvent(
+                event_type="document_processing_failed",
+                actor_user_id=user.id,
+                claim_id=claim.id,
+                details={"document_id": str(document.id)},
+            )
+        )
 
         db.commit()
 
         raise HTTPException(
             status_code=500,
             detail=(
-                "ClaimBridge document processing failed: "
-                f"{str(exc)}"
+                "ClaimBridge document processing failed. Review the server logs."
             ),
         )
 
@@ -896,6 +930,17 @@ def process_uploaded_document(
         document.processing_status = (
             "Completed"
         )
+        db.add(
+            AuditEvent(
+                event_type="document_processing_completed",
+                actor_user_id=user.id,
+                claim_id=claim.id if claim else None,
+                details={
+                    "document_id": str(document.id),
+                    "readiness_score": float(readiness_score),
+                },
+            )
+        )
 
         # -------------------------------------------------
         # STEP 14 — COMMIT EVERYTHING
@@ -966,10 +1011,56 @@ def process_uploaded_document(
 # GET DOCUMENT OCR / PROCESSING RESULT
 # =========================================================
 
+@router.get("/{document_id}/file")
+def download_document_file(
+    document_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_document_reader),
+):
+    try:
+        document_uuid = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID.")
+
+    document = (
+        db.query(ClaimDocument)
+        .filter(ClaimDocument.id == document_uuid)
+        .first()
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    claim = db.query(Claim).filter(Claim.id == document.claim_id).first()
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first() if claim else None
+    if not claim or not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(status_code=403, detail="This document is outside your authorized scope.")
+
+    file_path = Path(document.file_path or "").resolve()
+    upload_root = UPLOAD_DIR.resolve()
+    if file_path.parent != upload_root or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Document file is unavailable.")
+
+    db.add(
+        AuditEvent(
+            event_type="document_downloaded",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={"document_id": str(document.id)},
+        )
+    )
+    db.commit()
+    return FileResponse(
+        path=file_path,
+        filename=document.file_name,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/{document_id}/ocr")
 def get_document_ocr(
     document_id: str,
     db: Session = Depends(get_db),
+    user: User = Depends(require_document_reader),
 ):
     """
     Return the persisted OCR/extraction result
@@ -1011,6 +1102,14 @@ def get_document_ocr(
         raise HTTPException(
             status_code=404,
             detail="Document not found.",
+        )
+
+    claim = db.query(Claim).filter(Claim.id == document.claim_id).first()
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first() if claim else None
+    if not claim or not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(
+            status_code=403,
+            detail="This document is outside your authorized organization.",
         )
 
     # -----------------------------------------------------

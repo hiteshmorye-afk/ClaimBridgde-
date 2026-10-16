@@ -50,6 +50,25 @@ export interface ClaimHistoryItem {
   timestamp?: string | null;
 }
 
+export interface ClaimAuditEvent {
+  id: string;
+  eventType: string;
+  actorUserId?: string | null;
+  details: Record<string, unknown>;
+  timestamp?: string | null;
+}
+
+export interface ClaimAmendmentItem {
+  id: string;
+  requestedChanges: Record<string, unknown>;
+  originalValues: Record<string, unknown>;
+  reason?: string;
+  status: "Pending" | "Approved" | "Rejected";
+  reviewNote?: string | null;
+  createdAt?: string | null;
+  reviewedAt?: string | null;
+}
+
 export interface ReadinessComponentBreakdown {
   score: number;
   weight: number;
@@ -154,6 +173,8 @@ export interface ClaimApiData {
   readinessBreakdown?: ClaimReadinessBreakdown;
   confidenceDetails?: ConfidenceDetails;
   history?: ClaimHistoryItem[];
+  auditEvents?: ClaimAuditEvent[];
+  amendments?: ClaimAmendmentItem[];
   findings: Array<{
     label: string;
     severity: "ok" | "warn" | "error" | "warning";
@@ -183,19 +204,41 @@ export interface ClaimsSummaryData {
   approvedClaims: number;
   rejectedClaims: number;
   pendingClaims: number;
+  pendingReviewClaims: number;
+  awaitingInformationClaims: number;
+  escalatedClaims: number;
   averageReadinessScore: number;
+}
+
+export interface ClaimsAnalyticsData {
+  totalClaims: number;
+  pendingReview: number;
+  approved: number;
+  rejected: number;
+  awaitingInformation: number;
+  escalated: number;
+  averageProcessingTimeDays: number | null;
+  decisionDistribution: Record<string, number>;
+  commonDiscrepancies: Array<{ category: string; count: number }>;
+  readinessTrends: Array<{
+    month: string;
+    averageReadiness: number;
+    processedClaims: number;
+  }>;
 }
 
 export async function fetchClaimsSummary(): Promise<ClaimsSummaryData> {
   const response = await apiFetch<ClaimsSummaryData>("/claims/summary");
   if (response.error || !response.data) {
-    return {
-      totalClaims: 0,
-      approvedClaims: 0,
-      rejectedClaims: 0,
-      pendingClaims: 0,
-      averageReadinessScore: 0,
-    };
+    throw new Error(response.error || "Unable to load claims summary.");
+  }
+  return response.data;
+}
+
+export async function fetchClaimsAnalytics(): Promise<ClaimsAnalyticsData> {
+  const response = await apiFetch<ClaimsAnalyticsData>("/claims/analytics");
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Unable to load authorized claim analytics.");
   }
   return response.data;
 }
@@ -207,6 +250,9 @@ export async function fetchClaims(search?: string, statusFilter?: string) {
 
   const queryStr = params.toString() ? `?${params.toString()}` : "";
   const response = await apiFetch<ClaimApiData[]>(`/claims${queryStr}`);
+  if (response.error) {
+    throw new Error(response.error);
+  }
   return response.data;
 }
 
@@ -231,10 +277,11 @@ export async function createClaim(claimData: Partial<ClaimApiData>) {
 
 export async function updateClaimStatus(
   claimId: string,
-  action: "Approve" | "Reject" | "RequestInfo" | "Escalate" | string,
-  note?: string,
+  action: "Approve" | "Reject" | "RequestInfo" | "Escalate",
+  note: string,
   destination?: string,
-  policyReference?: string
+  policyReference?: string,
+  requestedDocuments?: string[],
 ) {
   const response = await apiFetch<{
     success: boolean;
@@ -244,7 +291,7 @@ export async function updateClaimStatus(
     action: string;
   }>(`/claims/${encodeURIComponent(claimId)}/status`, {
     method: "PATCH",
-    body: JSON.stringify({ action, note, destination, policyReference }),
+    body: JSON.stringify({ action, note, destination, policyReference, requestedDocuments }),
   });
   if (response.error) {
     throw new Error(response.error);
@@ -252,7 +299,7 @@ export async function updateClaimStatus(
   return response;
 }
 
-export async function submitHospitalResponse(
+export async function submitClaimantResponse(
   claimId: string,
   notes: string,
   submittedDocuments?: string[]
@@ -275,13 +322,55 @@ export async function submitHospitalResponse(
 export async function fetchTpaReviewQueue(
   queueFilter: string = "pending_review",
   hospitalFilter?: string,
-  statusFilter?: string
+  statusFilter?: string,
+  search?: string,
 ) {
   const params = new URLSearchParams();
   params.append("queue_filter", queueFilter);
   if (hospitalFilter) params.append("hospital_filter", hospitalFilter);
   if (statusFilter) params.append("status_filter", statusFilter);
+  if (search) params.append("search", search);
 
   const response = await apiFetch<TpaQueueItem[]>(`/claims/tpa/review-queue?${params.toString()}`);
-  return response.data || [];
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Unable to load the TPA review queue.");
+  }
+  return response.data;
+}
+
+export async function requestClaimAmendment(
+  claimId: string,
+  changes: Record<string, unknown>,
+  reason: string,
+) {
+  const response = await apiFetch<ClaimAmendmentItem>(
+    `/claims/${encodeURIComponent(claimId)}/amendments`,
+    {
+      method: "POST",
+      body: JSON.stringify({ changes, reason }),
+    },
+  );
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Unable to submit the amendment request.");
+  }
+  return response.data;
+}
+
+export async function reviewClaimAmendment(
+  amendmentId: string,
+  decision: "Approve" | "Reject",
+  note: string,
+) {
+  const response = await apiFetch<{
+    id: string;
+    status: "Approved" | "Rejected";
+    reviewNote: string;
+  }>(`/claims/amendments/${encodeURIComponent(amendmentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ decision, note }),
+  });
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Unable to review the amendment.");
+  }
+  return response.data;
 }

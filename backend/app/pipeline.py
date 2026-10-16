@@ -1,9 +1,14 @@
+from pathlib import Path
+
 from .validation_engine import validate_extracted_information
 from .ocr import run_ocr
 from .document_classifier import classify_document
 from .information_extractor import extract_information
+from .biomedical_nlp import get_biomedical_nlp_service
 from .medical_intelligence import analyze_medical_information
+from .policy_rag import get_policy_rag_engine
 from .policy_intelligence import analyze_policy_information
+from .llm_adapter import get_llm_client, ClaimContextForLLM
 from .claim_readiness_engine import evaluate_claim_readiness
 from .confidence_engine import evaluate_claim_confidence
 from .final_claim_decision import evaluate_final_claim_decision
@@ -124,15 +129,43 @@ def process_document(
     )
 
     # =====================================================
-    # STEP 4: MEDICAL INTELLIGENCE
+    # STEP 4: BIOMEDICAL NLP
     # =====================================================
 
-    print("\n[4/9] Running Medical Intelligence...")
+    print("\n[4/11] Running Biomedical NLP...")
+
+    biomedical_service = get_biomedical_nlp_service()
+    biomedical_result = biomedical_service.process_clinical_text(
+        extracted_text
+    )
+
+    print(
+        f"Detected Diseases: {biomedical_result.diseases}"
+    )
+    print(
+        f"Detected Procedures: {biomedical_result.procedures}"
+    )
+    print(
+        f"Detected Medications: {biomedical_result.medications}"
+    )
+
+    # =====================================================
+    # STEP 5: MEDICAL INTELLIGENCE
+    # =====================================================
+
+    print("\n[5/11] Running Medical Intelligence...")
 
     medical_result = analyze_medical_information(
         extracted_text,
         extraction_result,
     )
+
+    # Enrich medical diagnosis/procedure if absent from regex
+    if not medical_result.get("diagnosis") and biomedical_result.diseases:
+        medical_result["diagnosis"] = biomedical_result.diseases[0]
+    if not medical_result.get("procedure") and biomedical_result.procedures:
+        medical_result["procedure"] = biomedical_result.procedures[0]
+    medical_result["biomedical_nlp"] = biomedical_result.to_dict()
 
     print(
         f"Medical Diagnosis: "
@@ -160,13 +193,21 @@ def process_document(
     )
 
     # =====================================================
-    # STEP 5: POLICY INTELLIGENCE
+    # STEP 6: POLICY RAG & POLICY INTELLIGENCE
     # =====================================================
 
-    print("\n[5/9] Running Policy Intelligence...")
+    print("\n[6/11] Running Policy RAG Retrieval & Intelligence...")
 
     policy_text = load_policy_document(
         policy_path
+    )
+
+    rag_engine = get_policy_rag_engine()
+    policy_id = Path(policy_path).stem if policy_path else "sample_policy"
+    policy_rag_citations = rag_engine.retrieve(
+        query=extracted_text,
+        policy_id=policy_id,
+        top_k=3,
     )
 
     policy_result = analyze_policy_information(
@@ -175,6 +216,8 @@ def process_document(
         extracted_information=extraction_result,
         medical_information=medical_result,
     )
+
+    policy_result["rag_citations"] = [c.to_dict() for c in policy_rag_citations]
 
     print(
         f"Policy Status: "
@@ -187,15 +230,20 @@ def process_document(
     )
 
     print(
+        f"Retrieved Policy Citations: "
+        f"{len(policy_rag_citations)}"
+    )
+
+    print(
         f"Relevant Exclusions: "
         f"{policy_result['relevant_exclusions']}"
     )
 
     # =====================================================
-    # STEP 6: VALIDATION
+    # STEP 7: DETERMINISTIC VALIDATION
     # =====================================================
 
-    print("\n[6/9] Running Validation Engine...")
+    print("\n[7/11] Running Validation Engine...")
 
     validation_result = validate_extracted_information(
         extraction_result
@@ -219,6 +267,36 @@ def process_document(
     print(
         f"Mismatches: "
         f"{validation_result['mismatches']}"
+    )
+
+    # =====================================================
+    # STEP 8: LLM REVIEWER EXPLANATION & ADVISORY SYNTHESIS
+    # =====================================================
+
+    print("\n[8/11] Generating LLM Reviewer Advisory Note...")
+
+    llm_client = get_llm_client()
+    llm_context = ClaimContextForLLM(
+        claim_id=claim_id,
+        patient_name=extraction_result.get("patient_name"),
+        patient_age=extraction_result.get("age"),
+        hospital=extraction_result.get("hospital_name"),
+        policy_number=extraction_result.get("policy_number"),
+        claimed_amount=float(extraction_result.get("total_charges") or 0.0),
+        diagnosis=medical_result.get("diagnosis"),
+        procedure=medical_result.get("procedure"),
+        medical_indicators=medical_result.get("medical_indicators", []),
+        medical_services=medical_result.get("medical_services", []),
+        policy_citations=[c.to_dict() for c in policy_rag_citations],
+        missing_documents=validation_result.get("missing_fields", []),
+        mismatches=validation_result.get("mismatches", []),
+        readiness_score=validation_result.get("readiness_score"),
+    )
+
+    llm_explanation_result = llm_client.generate_explanation(llm_context)
+
+    print(
+        f"LLM Synthesis Status: {llm_explanation_result.provider_status}"
     )
 
     # =====================================================
@@ -326,11 +404,17 @@ def process_document(
 
         "extracted_information": extraction_result,
 
+        "biomedical_nlp": biomedical_result.to_dict(),
+
         "medical_intelligence": medical_result,
+
+        "policy_rag": [c.to_dict() for c in policy_rag_citations],
 
         "policy_intelligence": policy_result,
 
         "validation": validation_result,
+
+        "llm_explanation": llm_explanation_result.to_dict(),
 
         "claim_readiness": readiness_result,
 

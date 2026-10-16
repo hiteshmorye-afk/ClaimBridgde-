@@ -21,7 +21,13 @@ import {
   X,
   Lock,
 } from "lucide-react";
-import { loginUser, registerUser } from "@/api/auth";
+import {
+  loginUser,
+  registerUser,
+  registerTpaApplicant,
+  resendEmailOtp,
+  verifyEmailOtp,
+} from "@/api/auth";
 import { useTheme } from "@/hooks/useTheme";
 import { toast } from "sonner";
 
@@ -34,17 +40,21 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
 
   // Intro splash stage vs landing cover portal
   const [showSplash, setShowSplash] = useState(true);
-  const [portalType, setPortalType] = useState<"Hospital" | "TPA">("Hospital");
+  const [portalType, setPortalType] = useState<"Claimant" | "TPA">("Claimant");
   
   // Auth Mode: Sign In vs Create Account
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
 
   // Dynamic Form Fields (Not hardcoded)
   const [fullName, setFullName] = useState("");
-  const [hospitalName, setHospitalName] = useState("");
+  const [organization, setOrganization] = useState("");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [pendingChallenge, setPendingChallenge] = useState<string | null>(null);
+  const [otpCode, setOtpCode] = useState("");
+  const [activationMessage, setActivationMessage] = useState("");
   
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -58,8 +68,8 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
   }, []);
 
   // Validation Rules
-  const isValidIdentifier = email.trim().length >= 3;
-  const isMinLength = password.length >= 8;
+  const isValidIdentifier = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const isMinLength = password.length >= 12;
   const hasUpper = /[A-Z]/.test(password);
   const hasLower = /[a-z]/.test(password);
   const hasSpecialOrNum = /[!@#$%^&*(),.?":{}|<>0-9]/.test(password);
@@ -74,23 +84,52 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
   };
 
   const handleDemoAutofill = () => {
-    setEmail("23102030");
+    setEmail("claimant.demo@claimbridge.local");
     setPassword("SecurePass#2026");
     if (authMode === "signup") {
-      setFullName("Coordinator 23102030");
-      setHospitalName("Chong Hua Hospital");
+      setFullName("Synthetic Demo Claimant");
+      setOrganization("");
+      setPhone("+15555550123");
       setConfirmPassword("SecurePass#2026");
     }
-    toast.info("Autofilled demo User ID: 23102030");
+    toast.info("Demo fields filled. Sign-in requires a provisioned demo account.");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     // Trigger touched state for all fields
+    if (pendingChallenge) {
+      if (!/^\d{6}$/.test(otpCode)) {
+        toast.error("Enter the six-digit verification code.");
+        return;
+      }
+      setIsAuthenticating(true);
+      try {
+        const user = await verifyEmailOtp(pendingChallenge, otpCode);
+        setPendingChallenge(null);
+        setOtpCode("");
+        if (user) {
+          toast.success("Email verified. Your account is active.");
+          onAuthenticated();
+        } else {
+          const message =
+            "Email verified. TPA organization authorization is still required before sign-in.";
+          setActivationMessage(message);
+          toast.info(message);
+        }
+      } catch (err: any) {
+        toast.error(err.message || "Email verification failed.");
+      } finally {
+        setIsAuthenticating(false);
+      }
+      return;
+    }
+
     setTouched({
       fullName: true,
-      hospitalName: true,
+      organization: true,
+      phone: true,
       email: true,
       password: true,
       confirmPassword: true,
@@ -108,12 +147,16 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
         toast.error("Full Name is required.");
         return;
       }
-      if (!hospitalName.trim()) {
-        toast.error("Hospital or Organization name is required.");
+      if (!/^\+?[0-9]{8,15}$/.test(phone.trim())) {
+        toast.error("Enter a valid phone number with 8 to 15 digits.");
+        return;
+      }
+      if (portalType === "TPA" && !organization.trim()) {
+        toast.error("TPA organization is required for the provisioning request.");
         return;
       }
       if (!isStrongPassword) {
-        toast.error("Password does not meet strength requirements (8+ chars, Uppercase, Lowercase, Special char/Number).");
+        toast.error("Password must be at least 12 characters and include uppercase, lowercase, and a number or symbol.");
         return;
       }
       if (!isPasswordMatch) {
@@ -132,28 +175,34 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
 
     try {
       if (authMode === "signup") {
-        await registerUser({
-          fullName,
-          email,
-          password,
-          portal: portalType,
-        });
-        toast.success(`Account created for ${fullName}`, {
-          description: "Welcome to ClaimBridge Enterprise AI Workspace.",
-        });
+        const registration = portalType === "TPA"
+          ? await registerTpaApplicant({
+              fullName,
+              phone,
+              email,
+              password,
+              organization,
+            })
+          : await registerUser({ fullName, phone, email, password });
+        setPendingChallenge(registration.challenge_id);
+        setActivationMessage("");
+        toast.success("Verification email accepted by the configured provider.");
       } else {
         await loginUser({
           email,
           password,
-          portal: portalType,
         });
         toast.success(`Authenticated as ${email}`);
       }
 
-      setTimeout(() => {
+      if (authMode === "signin") {
+        setTimeout(() => {
+          setIsAuthenticating(false);
+          onAuthenticated();
+        }, 600);
+      } else {
         setIsAuthenticating(false);
-        onAuthenticated();
-      }, 600);
+      }
     } catch (err: any) {
       setIsAuthenticating(false);
       toast.error(err.message || "Authentication failed. Please check credentials.");
@@ -447,7 +496,7 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
               </div>
 
               {/* Portal Selection Cards (TPA vs User/Hospital Login) */}
-              <div className="grid grid-cols-2 gap-3">
+              {!pendingChallenge && <div className="grid grid-cols-2 gap-3">
                 
                 <button
                   type="button"
@@ -462,7 +511,7 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     <Activity className="size-5" />
                   </div>
                   <div className="mt-3">
-                    <p className="text-xs font-bold text-slate-900 dark:text-white">TPA / Pre-Auth Login</p>
+                    <p className="text-xs font-bold text-slate-900 dark:text-white">Claims Officer / TPA</p>
                     <p className="mt-0.5 text-[10px] text-slate-500 dark:text-[#9CA3AF]">
                       Claims, pre-authorizations & settlement ops
                     </p>
@@ -471,9 +520,9 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
 
                 <button
                   type="button"
-                  onClick={() => setPortalType("Hospital")}
+                  onClick={() => setPortalType("Claimant")}
                   className={`flex flex-col justify-between p-4 rounded-2xl border text-left transition-all ${
-                    portalType === "Hospital"
+                    portalType === "Claimant"
                       ? "border-[#3B82F6] bg-[#3B82F6]/10 shadow-lg shadow-[#3B82F6]/20"
                       : "border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] hover:border-slate-300"
                   }`}
@@ -482,17 +531,57 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     <Building2 className="size-5" />
                   </div>
                   <div className="mt-3">
-                    <p className="text-xs font-bold text-slate-900 dark:text-white">User / Hospital Login</p>
+                    <p className="text-xs font-bold text-slate-900 dark:text-white">Claimant</p>
                     <p className="mt-0.5 text-[10px] text-slate-500 dark:text-[#9CA3AF]">
-                      Hospital workspace & coordinator access
+                      Submit and track your own claims
                     </p>
                   </div>
                 </button>
 
-              </div>
+              </div>}
 
               {/* Login / Register Form */}
               <form onSubmit={handleSubmit} className="space-y-4">
+                {pendingChallenge ? (
+                  <div className="space-y-4">
+                    <p className="text-sm text-slate-600 dark:text-[#9CA3AF]">
+                      Enter the verification code sent to {email}. The code expires in 10 minutes.
+                    </p>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      value={otpCode}
+                      onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, ""))}
+                      aria-label="Six-digit email verification code"
+                      required
+                      className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-center font-mono text-lg tracking-[0.5em] text-slate-900 outline-none focus:border-[#3B82F6] dark:border-[#1F2937] dark:bg-[#0B0F17] dark:text-white"
+                      placeholder="000000"
+                    />
+                    {activationMessage && (
+                      <p className="rounded-lg bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                        {activationMessage}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await resendEmailOtp(email);
+                          toast.success("If the account is eligible, a verification email will be sent.");
+                        } catch (err: any) {
+                          toast.error(err.message || "Could not request another code.");
+                        }
+                      }}
+                      className="text-xs font-semibold text-[#3B82F6] hover:underline"
+                    >
+                      Resend verification email
+                    </button>
+                  </div>
+                ) : (
+                  <>
                 
                 {/* CREATE ACCOUNT EXTRA FIELDS */}
                 {authMode === "signup" && (
@@ -508,13 +597,13 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                         onBlur={() => handleBlur("fullName")}
                         required
                         className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-900 dark:text-white bg-slate-50 dark:bg-[#0B0F17] outline-none transition ${
-                          touched.fullName && !fullName.trim()
+                          touched["fullName"] && !fullName.trim()
                             ? "border-red-500 focus:border-red-500"
                             : "border-slate-200 dark:border-[#1F2937] focus:border-[#3B82F6]"
                         }`}
-                        placeholder="Dr. Sarah Jenkins"
+                        placeholder="Your full name"
                       />
-                      {touched.fullName && !fullName.trim() && (
+                      {touched["fullName"] && !fullName.trim() && (
                         <p className="text-[11px] text-red-500 flex items-center gap-1">
                           <AlertCircle className="size-3" /> Full Name is required.
                         </p>
@@ -523,27 +612,38 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
 
                     <div className="space-y-1.5">
                       <label className="text-xs font-semibold text-slate-600 dark:text-[#9CA3AF]">
-                        Hospital / Organization Name <span className="text-red-500">*</span>
+                        Phone number <span className="text-red-500">*</span>
                       </label>
                       <input
-                        type="text"
-                        value={hospitalName}
-                        onChange={(e) => setHospitalName(e.target.value)}
-                        onBlur={() => handleBlur("hospitalName")}
+                        type="tel"
+                        autoComplete="tel"
+                        value={phone}
+                        onChange={(event) => setPhone(event.target.value)}
                         required
-                        className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-900 dark:text-white bg-slate-50 dark:bg-[#0B0F17] outline-none transition ${
-                          touched.hospitalName && !hospitalName.trim()
-                            ? "border-red-500 focus:border-red-500"
-                            : "border-slate-200 dark:border-[#1F2937] focus:border-[#3B82F6]"
-                        }`}
-                        placeholder="Chong Hua Hospital"
+                        pattern="\+?[0-9]{8,15}"
+                        className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none focus:border-[#3B82F6] dark:border-[#1F2937] dark:bg-[#0B0F17] dark:text-white"
+                        placeholder="+15555550123"
                       />
-                      {touched.hospitalName && !hospitalName.trim() && (
-                        <p className="text-[11px] text-red-500 flex items-center gap-1">
-                          <AlertCircle className="size-3" /> Hospital or Organization is required.
-                        </p>
-                      )}
                     </div>
+                    {portalType === "TPA" && (
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 dark:text-[#9CA3AF]">
+                          TPA organization (pending trusted verification) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={organization}
+                          onChange={(event) => setOrganization(event.target.value)}
+                          required
+                          maxLength={150}
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none focus:border-[#3B82F6] dark:border-[#1F2937] dark:bg-[#0B0F17] dark:text-white"
+                          placeholder="Official TPA organization"
+                        />
+                        <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                          Entering an organization does not grant officer access. A trusted provisioner must authorize it.
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -559,15 +659,15 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     onBlur={() => handleBlur("email")}
                     required
                     className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-900 dark:text-white bg-slate-50 dark:bg-[#0B0F17] outline-none transition ${
-                      touched.email && !isValidIdentifier
+                      touched["email"] && !isValidIdentifier
                         ? "border-red-500 focus:border-red-500"
                         : "border-slate-200 dark:border-[#1F2937] focus:border-[#3B82F6]"
                     }`}
-                    placeholder="Enter User ID (e.g. 23102030 or user@hospital.com)"
+                    placeholder="name@example.com"
                   />
-                  {touched.email && !isValidIdentifier && (
+                  {touched["email"] && !isValidIdentifier && (
                     <p className="text-[11px] text-red-500 flex items-center gap-1">
-                      <AlertCircle className="size-3" /> Enter a valid User ID or Email (e.g. 23102030).
+                      <AlertCircle className="size-3" /> Enter a valid email address.
                     </p>
                   )}
                 </div>
@@ -591,7 +691,7 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     onBlur={() => handleBlur("password")}
                     required
                     className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-900 dark:text-white bg-slate-50 dark:bg-[#0B0F17] outline-none transition ${
-                      touched.password && authMode === "signup" && !isStrongPassword
+                      touched["password"] && authMode === "signup" && !isStrongPassword
                         ? "border-amber-500 focus:border-amber-500"
                         : "border-slate-200 dark:border-[#1F2937] focus:border-[#3B82F6]"
                     }`}
@@ -632,7 +732,7 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                       {/* Rule Checklist Pills */}
                       <div className="grid grid-cols-2 gap-1.5 pt-1 text-[10px]">
                         <span className={`flex items-center gap-1 ${isMinLength ? "text-emerald-500 font-semibold" : "text-slate-400"}`}>
-                          {isMinLength ? <Check className="size-3" /> : <X className="size-3" />} 8+ Characters
+                          {isMinLength ? <Check className="size-3" /> : <X className="size-3" />} 12+ Characters
                         </span>
                         <span className={`flex items-center gap-1 ${hasUpper ? "text-emerald-500 font-semibold" : "text-slate-400"}`}>
                           {hasUpper ? <Check className="size-3" /> : <X className="size-3" />} Uppercase (A-Z)
@@ -661,13 +761,13 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                       onBlur={() => handleBlur("confirmPassword")}
                       required
                       className={`h-11 w-full rounded-xl border px-4 text-sm text-slate-900 dark:text-white bg-slate-50 dark:bg-[#0B0F17] outline-none transition ${
-                        touched.confirmPassword && !isPasswordMatch
+                        touched["confirmPassword"] && !isPasswordMatch
                           ? "border-red-500 focus:border-red-500"
                           : "border-slate-200 dark:border-[#1F2937] focus:border-[#3B82F6]"
                       }`}
                       placeholder="Re-enter password to confirm"
                     />
-                    {touched.confirmPassword && !isPasswordMatch && (
+                    {touched["confirmPassword"] && !isPasswordMatch && (
                       <p className="text-[11px] text-red-500 flex items-center gap-1">
                         <AlertCircle className="size-3" /> Passwords do not match.
                       </p>
@@ -683,6 +783,8 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                 >
                   {isAuthenticating ? (
                     <span>Processing...</span>
+                  ) : pendingChallenge ? (
+                    <span>Verify Email</span>
                   ) : authMode === "signin" ? (
                     <>
                       <span>Sign In</span>
@@ -695,6 +797,8 @@ export function LandingPortal({ onAuthenticated }: LandingPortalProps) {
                     </>
                   )}
                 </button>
+                  </>
+                )}
               </form>
 
               {/* TOGGLE BETWEEN SIGN IN & CREATE ACCOUNT */}

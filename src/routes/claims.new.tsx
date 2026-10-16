@@ -39,6 +39,7 @@ import {
 } from "@/lib/documentCatalogue";
 import {
   ClaimFormState,
+  ClaimFormErrors,
   CONFIGURED_INSURERS,
   validateClaimForm,
   validatePatientName,
@@ -135,7 +136,7 @@ export function NewClaimPage() {
   });
 
   // Validation State
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<ClaimFormErrors>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   // Field Refs for Auto-Focus on Validation Failure
@@ -336,11 +337,8 @@ export function NewClaimPage() {
   ) => {
     setDocumentFiles((prev) => {
       const remainingFrom = prev[fromCategory].filter((item) => item.id !== record.id);
-      const updatedRecord: UploadedFileRecord = {
-        ...record,
-        category: toCategory,
-        discrepancyWarning: undefined,
-      };
+      const updatedRecord = { ...record, category: toCategory };
+      delete updatedRecord.discrepancyWarning;
       const toMeta = DOCUMENT_CATALOGUE_BY_ID.get(toCategory);
       const isMultiple = toMeta?.multiple ?? false;
       const targetExisting = prev[toCategory] || [];
@@ -451,8 +449,6 @@ export function NewClaimPage() {
           form.diagnosisCode === UNLISTED_DIAGNOSIS_CODE ? "Unresolved" : "ICD-10",
         clinicalNotes: form.clinicalNotes.trim(),
         claimedAmount: Number(form.claimedAmount),
-        status: "Under Analysis",
-        stage: "01 Secure Document Intake",
       });
 
       const realClaimId = created?.id;
@@ -943,7 +939,7 @@ export function NewClaimPage() {
                 onClinicalNotesChange={(val) =>
                   setForm((prev) => ({ ...prev, clinicalNotes: val }))
                 }
-                error={errors.diagnosis}
+                {...(errors.diagnosis ? { error: errors.diagnosis } : {})}
               />
             </div>
 

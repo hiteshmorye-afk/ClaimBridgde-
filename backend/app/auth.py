@@ -3,17 +3,21 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
 import uuid
-from typing import Optional, List
+from datetime import datetime, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
+from pydantic import BaseModel, EmailStr, Field
 from pwdlib import PasswordHash
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import User
+from .models import AuditEvent, OtpChallenge, User
+from .otp_delivery import OtpDeliveryError, send_email_otp
 
 router = APIRouter(
     prefix="/auth",
@@ -22,8 +26,17 @@ router = APIRouter(
 
 password_hash = PasswordHash.recommended()
 
-JWT_SECRET_KEY = os.environ.get("CLAIMBRIDGE_JWT_SECRET", "claimbridge-secure-signing-secret-key-2026")
+JWT_SECRET_KEY = os.environ.get("CLAIMBRIDGE_JWT_SECRET")
+if not JWT_SECRET_KEY or len(JWT_SECRET_KEY.encode("utf-8")) < 32:
+    raise RuntimeError(
+        "CLAIMBRIDGE_JWT_SECRET must be configured with at least 32 bytes."
+    )
 TOKEN_EXPIRY_SECONDS = 86400 * 7  # 7 days
+SUPPORTED_ROLES = {"claimant", "claims_officer"}
+OTP_TTL = timedelta(minutes=10)
+OTP_RATE_WINDOW = timedelta(hours=1)
+OTP_MAX_REQUESTS = 5
+OTP_MAX_ATTEMPTS = 5
 
 
 # =========================================================
@@ -80,34 +93,26 @@ def create_access_token(
 def verify_access_token(token: str) -> Optional[dict]:
     """
     Verify signature and expiry of token.
-    Also handles legacy test format 'token_<uuid>'.
     """
     if not token:
         return None
-
-    # Support legacy test format 'token_<uuid>'
-    if token.startswith("token_"):
-        raw_id = token.replace("token_", "").strip()
-        try:
-            uuid.UUID(raw_id)
-            return {"sub": raw_id, "legacy": True}
-        except ValueError:
-            return None
 
     parts = token.split(".")
     if len(parts) != 3:
         return None
 
     header_b64, payload_b64, sig_b64 = parts
-    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
-
-    expected_sig = hmac.new(
-        JWT_SECRET_KEY.encode("utf-8"),
-        signing_input,
-        hashlib.sha256,
-    ).digest()
-
     try:
+        header = json.loads(_b64decode(header_b64).decode("utf-8"))
+        if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+            return None
+
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        expected_sig = hmac.new(
+            JWT_SECRET_KEY.encode("utf-8"),
+            signing_input,
+            hashlib.sha256,
+        ).digest()
         actual_sig = _b64decode(sig_b64)
         if not hmac.compare_digest(expected_sig, actual_sig):
             return None
@@ -115,8 +120,13 @@ def verify_access_token(token: str) -> Optional[dict]:
         payload_json = _b64decode(payload_b64).decode("utf-8")
         payload = json.loads(payload_json)
 
-        # Check expiry
-        if payload.get("exp") and payload["exp"] < time.time():
+        if not isinstance(payload, dict):
+            return None
+        if not isinstance(payload.get("sub"), str):
+            return None
+        if not isinstance(payload.get("exp"), (int, float)):
+            return None
+        if payload["exp"] <= time.time():
             return None
 
         return payload
@@ -204,6 +214,24 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if (
+        user.role not in SUPPORTED_ROLES
+        or user.account_status != "active"
+        or not user.email_verified_at
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not active for the current role system.",
+        )
+
+    if user.role == "claims_officer" and (
+        not user.organization_verified_at or not (user.organization or "").strip()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A trusted TPA organization authorization is required.",
+        )
+
     return user
 
 
@@ -221,24 +249,33 @@ def require_roles(*allowed_roles: str):
     return role_checker
 
 
-def require_tpa_reviewer(user: User = Depends(get_current_user)) -> User:
-    """
-    Strictly verifies that user is an authorized TPA reviewer or Admin.
-    Hospital coordinators calling TPA actions receive HTTP 403.
-    """
-    if user.role == "Coordinator" or user.portal == "Hospital":
+def require_claimant(user: User = Depends(get_current_user)) -> User:
+    if user.role != "claimant":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Hospital coordinators are not authorized to adjudicate, approve, reject, or escalate claims.",
+            detail="This action requires the claimant role.",
         )
-
-    if user.role not in {"Reviewer", "Admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Unauthorized: TPA actions require 'Reviewer' or 'Admin' role (current: '{user.role}').",
-        )
-
     return user
+
+
+def require_claims_officer(user: User = Depends(get_current_user)) -> User:
+    if user.role != "claims_officer" or not (user.organization or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action requires an organization-authorized claims officer.",
+        )
+    return user
+
+
+def require_document_reader(user: User = Depends(get_current_user)) -> User:
+    if user.role == "claimant":
+        return user
+    if user.role == "claims_officer" and (user.organization or "").strip():
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Document access requires an active claimant or organization-authorized claims officer.",
+    )
 
 
 # =========================================================
@@ -246,22 +283,115 @@ def require_tpa_reviewer(user: User = Depends(get_current_user)) -> User:
 # =========================================================
 
 class RegisterRequest(BaseModel):
-    full_name: str
+    full_name: str = Field(min_length=2, max_length=150)
     email: EmailStr
-    password: str
-    role: str = "Coordinator"
-    portal: str = "Hospital"
-    organization: Optional[str] = None
+    phone: str = Field(min_length=8, max_length=20, pattern=r"^\+?[0-9]{8,15}$")
+    password: str = Field(min_length=12, max_length=128)
+
+
+class TpaRegistrationRequest(RegisterRequest):
+    organization: str = Field(min_length=2, max_length=150)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
+
+
+class VerifyEmailRequest(BaseModel):
+    challenge_id: uuid.UUID
+    code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class ResendOtpRequest(BaseModel):
+    email: EmailStr
 
 
 # =========================================================
 # AUTH ROUTES
 # =========================================================
+
+def _fingerprint(value: str, context: str) -> str:
+    return hmac.new(
+        JWT_SECRET_KEY.encode("utf-8"),
+        f"{context}:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _create_email_challenge(
+    db: Session,
+    user: User,
+    request: Request,
+    purpose: str,
+) -> uuid.UUID:
+    now = datetime.utcnow()
+    recipient_hash = _fingerprint(user.email.lower(), "recipient")
+    requester_ip = request.client.host if request.client else "unknown"
+    requester_hash = _fingerprint(requester_ip, "requester")
+    recent_count = (
+        db.query(OtpChallenge)
+        .filter(
+            OtpChallenge.created_at >= now - OTP_RATE_WINDOW,
+            or_(
+                OtpChallenge.recipient_hash == recipient_hash,
+                OtpChallenge.requester_hash == requester_hash,
+            ),
+        )
+        .count()
+    )
+    if recent_count >= OTP_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many verification requests. Try again later.",
+        )
+
+    for previous in (
+        db.query(OtpChallenge)
+        .filter(
+            OtpChallenge.user_id == user.id,
+            OtpChallenge.purpose == purpose,
+            OtpChallenge.consumed_at.is_(None),
+        )
+        .all()
+    ):
+        previous.consumed_at = now
+
+    challenge_id = uuid.uuid4()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    challenge = OtpChallenge(
+        id=challenge_id,
+        user_id=user.id,
+        purpose=purpose,
+        recipient_hash=recipient_hash,
+        requester_hash=requester_hash,
+        code_digest=_fingerprint(f"{challenge_id}:{code}", "otp"),
+        attempts=0,
+        expires_at=now + OTP_TTL,
+        created_at=now,
+    )
+    db.add(challenge)
+    db.add(
+        AuditEvent(
+            event_type="otp_email_requested",
+            actor_user_id=user.id,
+            details={"purpose": purpose, "channel": "email"},
+        )
+    )
+    db.flush()
+    send_email_otp(user.email, code, "account activation")
+    return challenge_id
+
+
+def _registration_response(user: User, challenge_id: uuid.UUID) -> dict:
+    return {
+        "message": "Verification email accepted by the configured provider.",
+        "user_id": str(user.id),
+        "email": user.email,
+        "challenge_id": str(challenge_id),
+        "verification_required": True,
+    }
+
 
 @router.post("/login")
 def login_user(
@@ -283,7 +413,7 @@ def login_user(
     if not user.password_hash:
         raise HTTPException(
             status_code=401,
-            detail="Password is not configured for this user account",
+            detail="Invalid email or password",
         )
 
     if not password_hash.verify(
@@ -295,11 +425,28 @@ def login_user(
             detail="Invalid email or password",
         )
 
+    if (
+        user.role not in SUPPORTED_ROLES
+        or user.account_status != "active"
+        or not user.email_verified_at
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is not activated or has not been explicitly mapped to a supported role.",
+        )
+    if user.role == "claims_officer" and (
+        not user.organization_verified_at or not (user.organization or "").strip()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Claims officer access requires trusted TPA organization authorization.",
+        )
+
     token = create_access_token(
         user_id=str(user.id),
         email=user.email,
         role=user.role,
-        portal=user.portal or "Hospital",
+        portal=user.portal or ("TPA" if user.role == "claims_officer" else "Claimant"),
         organization=user.organization or "",
     )
 
@@ -310,7 +457,7 @@ def login_user(
         "full_name": user.full_name,
         "email": user.email,
         "role": user.role,
-        "portal": user.portal or "Hospital",
+        "portal": user.portal or ("TPA" if user.role == "claims_officer" else "Claimant"),
         "organization": user.organization or "",
     }
 
@@ -318,51 +465,227 @@ def login_user(
 @router.post("/register")
 def register_user(
     user_data: RegisterRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     existing_user = (
         db.query(User)
-        .filter(User.email == user_data.email)
+        .filter(func.lower(User.email) == user_data.email.lower())
         .first()
     )
 
     if existing_user:
         raise HTTPException(
-            status_code=400,
+            status_code=409,
             detail="Email already registered",
         )
 
-    hashed_password = password_hash.hash(user_data.password)
-
     new_user = User(
-        full_name=user_data.full_name,
-        email=user_data.email,
-        role=user_data.role,
-        portal=user_data.portal,
-        organization=user_data.organization,
-        password_hash=hashed_password,
+        full_name=user_data.full_name.strip(),
+        email=user_data.email.lower(),
+        phone=user_data.phone,
+        role="claimant",
+        portal="Claimant",
+        account_status="pending_email_verification",
+        password_hash=password_hash.hash(user_data.password),
     )
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    try:
+        db.add(new_user)
+        db.flush()
+        challenge_id = _create_email_challenge(
+            db,
+            new_user,
+            request,
+            "claimant_registration",
+        )
+        db.commit()
+    except OtpDeliveryError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
-    token = create_access_token(
-        user_id=str(new_user.id),
-        email=new_user.email,
-        role=new_user.role,
-        portal=new_user.portal or "Hospital",
-        organization=new_user.organization or "",
+    return _registration_response(new_user, challenge_id)
+
+
+@router.post("/register/tpa", status_code=status.HTTP_202_ACCEPTED)
+def register_tpa_applicant(
+    user_data: TpaRegistrationRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    existing_user = (
+        db.query(User)
+        .filter(func.lower(User.email) == user_data.email.lower())
+        .first()
     )
+    if existing_user:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    applicant = User(
+        full_name=user_data.full_name.strip(),
+        email=user_data.email.lower(),
+        phone=user_data.phone,
+        role="claimant",
+        portal="TPA",
+        organization=user_data.organization.strip(),
+        account_status="pending_tpa_provisioning",
+        password_hash=password_hash.hash(user_data.password),
+    )
+    try:
+        db.add(applicant)
+        db.flush()
+        challenge_id = _create_email_challenge(
+            db,
+            applicant,
+            request,
+            "tpa_contact_verification",
+        )
+        db.commit()
+    except OtpDeliveryError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     return {
-        "message": "User registered successfully",
+        **_registration_response(applicant, challenge_id),
+        "message": "Contact email accepted by the configured provider; TPA organization authorization is still required.",
+        "organization_authorization_required": True,
+    }
+
+
+@router.post("/verify-email")
+def verify_email(
+    verification: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+):
+    challenge = (
+        db.query(OtpChallenge)
+        .filter(OtpChallenge.id == verification.challenge_id)
+        .with_for_update()
+        .first()
+    )
+    now = datetime.utcnow()
+    if (
+        not challenge
+        or challenge.purpose not in {
+            "claimant_registration",
+            "tpa_contact_verification",
+            "legacy_account_mapping",
+        }
+        or challenge.consumed_at is not None
+        or challenge.expires_at <= now
+        or challenge.attempts >= OTP_MAX_ATTEMPTS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code is invalid, expired, or already used.",
+        )
+
+    expected_digest = _fingerprint(
+        f"{challenge.id}:{verification.code}",
+        "otp",
+    )
+    if not hmac.compare_digest(challenge.code_digest, expected_digest):
+        challenge.attempts += 1
+        if challenge.attempts >= OTP_MAX_ATTEMPTS:
+            challenge.consumed_at = now
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code is invalid, expired, or already used.",
+        )
+
+    user = db.query(User).filter(User.id == challenge.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification account no longer exists.")
+
+    challenge.consumed_at = now
+    user.email_verified_at = now
+    if user.account_status == "pending_email_verification" and user.role == "claimant":
+        user.account_status = "active"
+    db.add(
+        AuditEvent(
+            event_type="email_verified",
+            actor_user_id=user.id,
+            details={"channel": "email", "purpose": challenge.purpose},
+        )
+    )
+    db.commit()
+
+    if user.account_status != "active":
+        return {
+            "verified": True,
+            "activated": False,
+            "message": "Contact verified. Trusted TPA organization authorization is still required.",
+        }
+
+    token = create_access_token(
+        user_id=str(user.id),
+        email=user.email,
+        role=user.role,
+        portal=user.portal or "Claimant",
+        organization=user.organization or "",
+    )
+    return {
+        "verified": True,
+        "activated": True,
         "token": token,
-        "user_id": str(new_user.id),
-        "email": new_user.email,
-        "role": new_user.role,
-        "portal": new_user.portal,
-        "organization": new_user.organization,
+        "user_id": str(user.id),
+        "full_name": user.full_name,
+        "email": user.email,
+        "phone": user.phone,
+        "role": user.role,
+        "portal": user.portal or "Claimant",
+        "organization": user.organization or "",
+    }
+
+
+@router.post("/otp/resend")
+def resend_email_otp(
+    resend: ResendOtpRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(func.lower(User.email) == resend.email.lower())
+        .first()
+    )
+    if not user or user.email_verified_at or user.account_status not in {
+        "pending_email_verification",
+        "pending_tpa_provisioning",
+        "pending_role_mapping",
+    }:
+        return {
+            "message": "If the account is eligible, a verification email will be sent.",
+        }
+
+    try:
+        _create_email_challenge(
+            db,
+            user,
+            request,
+            "claimant_registration"
+            if user.account_status == "pending_email_verification"
+            else "legacy_account_mapping"
+            if user.account_status == "pending_role_mapping"
+            else "tpa_contact_verification",
+        )
+        db.commit()
+    except OtpDeliveryError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "message": "If the account is eligible, a verification email will be sent.",
     }
 
 
@@ -377,73 +700,8 @@ def get_current_user_profile(
         "id": str(current_user.id),
         "full_name": current_user.full_name,
         "email": current_user.email,
+        "phone": current_user.phone,
         "role": current_user.role,
-        "portal": current_user.portal or "Hospital",
+        "portal": current_user.portal or "Claimant",
         "organization": current_user.organization or "",
     }
-
-
-def seed_default_users(db: Session):
-    """
-    Ensure standard portal testing users exist in Neon PostgreSQL.
-    """
-    default_users = [
-        {
-            "full_name": "Hospital Coordinator Chong Hua",
-            "email": "coordinator@chonghua.com",
-            "role": "Coordinator",
-            "portal": "Hospital",
-            "organization": "Chong Hua Hospital",
-            "password": "Password#123",
-        },
-        {
-            "full_name": "Hospital Coordinator Apollo",
-            "email": "coordinator@apollo.com",
-            "role": "Coordinator",
-            "portal": "Hospital",
-            "organization": "Apollo Hospital",
-            "password": "Password#123",
-        },
-        {
-            "full_name": "TPA Reviewer Pacific",
-            "email": "reviewer@pacific.com",
-            "role": "Reviewer",
-            "portal": "TPA",
-            "organization": "Pacific Healthcare TPA",
-            "password": "Password#123",
-        },
-        {
-            "full_name": "TPA Reviewer Star Health",
-            "email": "reviewer@starhealth.com",
-            "role": "Reviewer",
-            "portal": "TPA",
-            "organization": "Star Health Insurance",
-            "password": "Password#123",
-        },
-        {
-            "full_name": "System Administrator",
-            "email": "admin@claimbridge.com",
-            "role": "Admin",
-            "portal": "TPA",
-            "organization": "ClaimBridge Global",
-            "password": "Password#123",
-        },
-    ]
-
-    for u in default_users:
-        existing = db.query(User).filter(User.email == u["email"]).first()
-        if not existing:
-            user = User(
-                full_name=u["full_name"],
-                email=u["email"],
-                role=u["role"],
-                portal=u["portal"],
-                organization=u["organization"],
-                password_hash=password_hash.hash(u["password"]),
-            )
-            db.add(user)
-        else:
-            if not existing.organization or not existing.portal:
-                existing.organization = u["organization"]
-                existing.portal = u["portal"]
-    db.commit()

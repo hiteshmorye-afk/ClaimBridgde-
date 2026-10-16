@@ -4,22 +4,24 @@ import re
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .auth import (
-    get_current_user,
-    get_current_user_optional,
-    require_tpa_reviewer,
+    require_claimant,
+    require_claims_officer,
+    require_document_reader,
 )
 from .database import get_db
 from .models import (
     AIAnalysis,
+    AuditEvent,
     Claim,
+    ClaimAmendment,
     ClaimDocument,
     ClaimHistory,
     DocumentExtraction,
@@ -41,8 +43,6 @@ router = APIRouter(
 # =========================================================
 
 class CreateClaimRequest(BaseModel):
-    id: Optional[str] = None
-
     patientName: str
     patientAge: int = 0
 
@@ -61,23 +61,13 @@ class CreateClaimRequest(BaseModel):
 
     claimedAmount: float = 0.0
 
-    status: str = "Under Analysis"
-    stage: str = "01 Secure Document Intake"
-
-    readiness: float = 0.0
-    ocrConfidence: float = 0.0
-    medicalRisk: float = 0.0
-    medicalConfidence: float = 0.0
-    policyConfidence: float = 0.0
-    validationReadiness: float = 0.0
-    overallConfidence: float = 0.0
-
 
 class UpdateClaimStatusRequest(BaseModel):
-    action: str  # Approve, Reject, RequestInfo, Escalate
-    note: Optional[str] = None
+    action: Literal["Approve", "Reject", "RequestInfo", "Escalate"]
+    note: str
     destination: Optional[str] = None
     policyReference: Optional[str] = None
+    requestedDocuments: Optional[List[str]] = None
 
 
 class RequestInfoRequest(BaseModel):
@@ -88,6 +78,16 @@ class RequestInfoRequest(BaseModel):
 class HospitalResponseRequest(BaseModel):
     notes: str
     submittedDocuments: Optional[List[str]] = None
+
+
+class ClaimAmendmentRequest(BaseModel):
+    changes: Dict[str, Any]
+    reason: str
+
+
+class ClaimAmendmentDecisionRequest(BaseModel):
+    decision: Literal["Approve", "Reject"]
+    note: str
 
 
 # =========================================================
@@ -115,34 +115,53 @@ def generate_claim_number() -> str:
 def check_claim_access(claim: Claim, policy: Policy, user: Optional[User]) -> bool:
     """
     Verify organization-scoped access:
-    - Hospital coordinator: can only access claims from their assigned hospital
-    - TPA reviewer: can only access claims for their assigned insurance provider
-    - Admin: can access all claims
+    - Claimant: can only access claims they submitted
+    - Claims officer: can only access claims for their authorized TPA organization
     - Unauthenticated: allowed only when no user context is active (handled by route dependency)
     """
     if not user:
-        return True
+        return False
 
-    if user.role == "Admin":
-        return True
+    if user.role == "claimant":
+        return claim.created_by == user.id
 
-    if user.role == "Coordinator" or user.portal == "Hospital":
-        user_org = (user.organization or "").strip().lower()
-        claim_hospital = (claim.hospital_name or "").strip().lower()
-        if not user_org:
-            return True
-        if claim.created_by == user.id:
-            return True
-        return user_org in claim_hospital or claim_hospital in user_org
-
-    if user.role == "Reviewer" or user.portal == "TPA":
-        user_org = (user.organization or "").strip().lower()
-        insurer = (policy.insurance_provider or "").strip().lower()
-        if not user_org:
-            return True
-        return user_org in insurer or insurer in user_org
+    if user.role == "claims_officer":
+        user_org = (user.organization or "").strip().casefold()
+        insurer = (policy.insurance_provider or "").strip().casefold()
+        return bool(user_org and insurer and user_org == insurer)
 
     return False
+
+
+def apply_claim_scope(query, user: User):
+    """Apply the authenticated user's exact ownership or TPA organization boundary."""
+    if user.role == "claimant":
+        return query.filter(Claim.created_by == user.id)
+    if user.role == "claims_officer" and (user.organization or "").strip():
+        return query.filter(
+            func.lower(func.trim(Policy.insurance_provider))
+            == (user.organization or "").strip().lower()
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Your account has no authorized claim organization.",
+    )
+
+
+def _get_claim_by_identifier(db: Session, claim_id: str) -> Claim:
+    try:
+        claim_uuid = uuid.UUID(claim_id)
+        claim = db.query(Claim).filter(Claim.id == claim_uuid).first()
+    except ValueError:
+        claim = None
+    if not claim:
+        claim = db.query(Claim).filter(
+            Claim.claim_number.ilike(claim_id.strip())
+        ).first()
+    if not claim:
+        raise HTTPException(status_code=404, detail="Claim not found.")
+    return claim
 
 
 # =========================================================
@@ -192,7 +211,7 @@ def serialize_claim(
 
     if not detailed:
         claim_readiness_val = float(claim.readiness_score or 0)
-        route_decision = "Auto Approval Eligible" if claim_readiness_val >= 85.0 else "Human Review Required"
+        route_decision = "Human Review Required"
         return {
             "id": str(claim.id),
             "claimNumber": claim.claim_number,
@@ -237,6 +256,7 @@ def serialize_claim(
                 "thresholds": {"autoProcessing": 85.0, "readiness": 80.0},
             },
             "history": [],
+            "auditEvents": [],
             "findings": [],
         }
 
@@ -473,10 +493,14 @@ def serialize_claim(
                     "extractedValue": doc_extracted_data.get("patient_name"),
                     "sourceDocument": document.file_name,
                     "page": "1",
-                    "confidence": doc_ocr_conf or 95.0,
+                    "confidence": doc_ocr_conf,
                     "validationRule": "Matches registered claim patient full name",
                     "result": "Accepted" if name_match else "Mismatch",
-                    "explanation": "Extracted patient identity reconciles with policy schedule." if name_match else f"Name mismatch: '{doc_extracted_data.get('patient_name')}' vs expected '{patient.full_name}'",
+                    "explanation": (
+                        "Name matches the claim registration field; identity is not independently verified."
+                        if name_match
+                        else "Document name conflicts with the claim registration field and requires human review."
+                    ),
                     "conflictingValue": patient.full_name if not name_match else None,
                 })
 
@@ -489,7 +513,7 @@ def serialize_claim(
                     "extractedValue": f"INR {bill_amt:,.2f}",
                     "sourceDocument": document.file_name,
                     "page": "1",
-                    "confidence": doc_ocr_conf or 96.5,
+                    "confidence": doc_ocr_conf,
                     "validationRule": "Reconciles with claimed amount",
                     "result": "Accepted" if is_amt_match else "Mismatch",
                     "explanation": "Extracted invoice total matches entered claimed amount within rounding tolerance." if is_amt_match else f"Invoice total {bill_amt} diverges from claim claimed amount {claim.claimed_amount}",
@@ -498,16 +522,23 @@ def serialize_claim(
 
             if doc_extracted_data.get("admission_date"):
                 adm_ext = str(doc_extracted_data.get("admission_date"))
+                admission_matches = adm_ext == (
+                    claim.admission_date.isoformat() if claim.admission_date else ""
+                )
                 field_validation_rows.append({
                     "field": "Admission Date",
                     "extractedValue": adm_ext,
                     "sourceDocument": document.file_name,
                     "page": "1",
-                    "confidence": doc_ocr_conf or 94.0,
+                    "confidence": doc_ocr_conf,
                     "validationRule": "Hospitalization timeline continuity",
-                    "result": "Accepted",
-                    "explanation": "Admission date documented and verified against claim timeline.",
-                    "conflictingValue": None,
+                    "result": "Accepted" if admission_matches else "Mismatch",
+                    "explanation": (
+                        "Date matches the claim registration field."
+                        if admission_matches
+                        else "Date conflicts with the claim registration field and requires human review."
+                    ),
+                    "conflictingValue": None if admission_matches else claim.admission_date.isoformat(),
                 })
 
     # Default field validation entries if no documents uploaded yet
@@ -515,23 +546,23 @@ def serialize_claim(
         field_validation_rows.append({
             "field": "Patient Full Name",
             "extractedValue": patient.full_name,
-            "sourceDocument": "Claim Registration Form",
+            "sourceDocument": "Claim registration data",
             "page": "1",
-            "confidence": 100.0,
+            "confidence": None,
             "validationRule": "Required alphabetic string validation",
-            "result": "Accepted",
-            "explanation": "Validated against ICD-10 patient demographic registry.",
+            "result": "Not Evaluated",
+            "explanation": "No supporting identity document has been processed; identity is not independently verified.",
             "conflictingValue": None,
         })
         field_validation_rows.append({
             "field": "Insurance Policy Number",
             "extractedValue": policy.policy_number,
-            "sourceDocument": "Policy Registry",
+            "sourceDocument": "Claim registration data",
             "page": "1",
-            "confidence": 100.0,
+            "confidence": None,
             "validationRule": "8-13 digit strict policy identifier rule",
-            "result": "Accepted",
-            "explanation": f"Verified with {policy.insurance_provider}.",
+            "result": "Not Evaluated",
+            "explanation": "Policy details are claimant-provided and have not been independently confirmed.",
             "conflictingValue": None,
         })
 
@@ -588,6 +619,23 @@ def serialize_claim(
                 "remarks": h.remarks or "",
                 "performedBy": actor_name,
                 "timestamp": h.created_at.isoformat() if h.created_at else None,
+            })
+
+    audit_event_records: List[Dict[str, Any]] = []
+    if db:
+        audit_rows = (
+            db.query(AuditEvent)
+            .filter(AuditEvent.claim_id == claim.id)
+            .order_by(AuditEvent.created_at.desc())
+            .all()
+        )
+        for event in audit_rows:
+            audit_event_records.append({
+                "id": str(event.id),
+                "eventType": event.event_type,
+                "actorUserId": str(event.actor_user_id) if event.actor_user_id else None,
+                "details": event.details or {},
+                "timestamp": event.created_at.isoformat() if event.created_at else None,
             })
 
     # Claim Readiness Breakdown (Weights: Validation 35%, Medical 25%, Policy 25%, OCR 15%)
@@ -691,6 +739,27 @@ def serialize_claim(
         "readinessBreakdown": readiness_breakdown,
         "confidenceDetails": confidence_details,
         "history": claim_history_records,
+        "auditEvents": audit_event_records,
+        "amendments": [
+            {
+                "id": str(amendment.id),
+                "requestedChanges": amendment.requested_changes,
+                "originalValues": amendment.original_values,
+                "reason": amendment.reason,
+                "status": amendment.status,
+                "reviewNote": amendment.review_note,
+                "createdAt": amendment.created_at.isoformat() if amendment.created_at else None,
+                "reviewedAt": amendment.reviewed_at.isoformat() if amendment.reviewed_at else None,
+            }
+            for amendment in (
+                db.query(ClaimAmendment)
+                .filter(ClaimAmendment.claim_id == claim.id)
+                .order_by(ClaimAmendment.created_at.desc())
+                .all()
+                if db
+                else []
+            )
+        ],
         "findings": findings if findings else [
             {
                 "label": "Pipeline Status",
@@ -708,7 +777,7 @@ def serialize_claim(
 @router.get("/summary")
 def get_claims_summary(
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user_optional),
+    user: User = Depends(require_document_reader),
 ):
     """
     Return operational analytics summary cards directly derived from live database:
@@ -717,30 +786,27 @@ def get_claims_summary(
     - Rejected claims
     - Pending / In Review / Under Analysis claims
     - Average readiness score
-    Scoped to user's assigned organization (Admins see all 158 claims).
+    Scoped to claimant ownership or the officer's exact TPA organization.
     """
     query = db.query(Claim)
-    if user and user.role != "Admin":
-        if user.role == "Coordinator" or user.portal == "Hospital":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.filter(
-                    or_(
-                        Claim.hospital_name.ilike(f"%{user_org}%"),
-                        Claim.created_by == user.id,
-                    )
-                )
-        elif user.role == "Reviewer" or user.portal == "TPA":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.join(Policy, Claim.policy_id == Policy.id).filter(
-                    Policy.insurance_provider.ilike(f"%{user_org}%")
-                )
+    if user.role == "claims_officer":
+        query = query.join(Policy, Claim.policy_id == Policy.id)
+    query = apply_claim_scope(query, user)
 
     claims = query.all()
     total = len(claims)
     approved = sum(1 for c in claims if c.claim_status == "Approved")
     rejected = sum(1 for c in claims if c.claim_status == "Rejected")
+    awaiting_information = sum(
+        1 for c in claims if "Additional Info Requested" in (c.current_stage or "")
+    )
+    escalated = sum(1 for c in claims if "Escalated" in (c.current_stage or ""))
+    pending_review = sum(
+        1 for c in claims
+        if c.claim_status in {"Needs Review", "Under Analysis"}
+        and "Additional Info Requested" not in (c.current_stage or "")
+        and "Escalated" not in (c.current_stage or "")
+    )
     pending = total - approved - rejected
     avg_readiness = (
         round(float(sum((c.readiness_score or 0) for c in claims)) / total, 1)
@@ -753,7 +819,130 @@ def get_claims_summary(
         "approvedClaims": approved,
         "rejectedClaims": rejected,
         "pendingClaims": pending,
+        "pendingReviewClaims": pending_review,
+        "awaitingInformationClaims": awaiting_information,
+        "escalatedClaims": escalated,
         "averageReadinessScore": avg_readiness,
+    }
+
+
+@router.get("/analytics")
+def get_claims_analytics(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_claims_officer),
+):
+    rows = (
+        apply_claim_scope(
+            db.query(Claim, Policy).join(Policy, Claim.policy_id == Policy.id),
+            user,
+        )
+        .order_by(Claim.created_at.asc())
+        .all()
+    )
+    claims = [claim for claim, _policy in rows]
+    claim_ids = [claim.id for claim in claims]
+    decisions = {
+        "Approved": sum(1 for claim in claims if claim.claim_status == "Approved"),
+        "Rejected": sum(1 for claim in claims if claim.claim_status == "Rejected"),
+        "Awaiting Information": sum(
+            1 for claim in claims
+            if "Additional Info Requested" in (claim.current_stage or "")
+        ),
+        "Escalated": sum(
+            1 for claim in claims if "Escalated" in (claim.current_stage or "")
+        ),
+        "Pending Review": sum(
+            1 for claim in claims
+            if claim.claim_status in {"Needs Review", "Under Analysis"}
+            and "Additional Info Requested" not in (claim.current_stage or "")
+            and "Escalated" not in (claim.current_stage or "")
+        ),
+    }
+
+    history_rows = (
+        db.query(ClaimHistory)
+        .filter(ClaimHistory.claim_id.in_(claim_ids))
+        .all()
+        if claim_ids
+        else []
+    )
+    completed_at = {}
+    for event in history_rows:
+        if event.new_status in {"Approved", "Rejected"} and event.created_at:
+            completed_at.setdefault(event.claim_id, event.created_at)
+
+    elapsed_days = [
+        (completed_at[claim.id] - claim.created_at).total_seconds() / 86400
+        for claim in claims
+        if claim.id in completed_at and claim.created_at
+    ]
+
+    verification_rows = (
+        db.query(VerificationResult)
+        .filter(VerificationResult.claim_id.in_(claim_ids))
+        .all()
+        if claim_ids
+        else []
+    )
+    discrepancy_counts: Dict[str, int] = {}
+    for verification in verification_rows:
+        for mismatch in verification.mismatches or []:
+            if isinstance(mismatch, dict):
+                label = str(
+                    mismatch.get("field")
+                    or mismatch.get("type")
+                    or mismatch.get("label")
+                    or "Uncategorized discrepancy"
+                )
+            else:
+                label = str(mismatch).strip() or "Uncategorized discrepancy"
+            discrepancy_counts[label] = discrepancy_counts.get(label, 0) + 1
+
+    readiness_events = (
+        db.query(AuditEvent)
+        .filter(
+            AuditEvent.claim_id.in_(claim_ids),
+            AuditEvent.event_type == "document_processing_completed",
+        )
+        .all()
+        if claim_ids
+        else []
+    )
+    trend_values: Dict[str, List[float]] = {}
+    for event in readiness_events:
+        score = (event.details or {}).get("readiness_score")
+        if event.created_at and isinstance(score, (int, float)):
+            month = event.created_at.strftime("%Y-%m")
+            trend_values.setdefault(month, []).append(float(score))
+
+    return {
+        "totalClaims": len(claims),
+        "pendingReview": decisions["Pending Review"],
+        "approved": decisions["Approved"],
+        "rejected": decisions["Rejected"],
+        "awaitingInformation": decisions["Awaiting Information"],
+        "escalated": decisions["Escalated"],
+        "averageProcessingTimeDays": (
+            round(sum(elapsed_days) / len(elapsed_days), 2)
+            if elapsed_days
+            else None
+        ),
+        "decisionDistribution": decisions,
+        "commonDiscrepancies": [
+            {"category": category, "count": count}
+            for category, count in sorted(
+                discrepancy_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "readinessTrends": [
+            {
+                "month": month,
+                "averageReadiness": round(sum(scores) / len(scores), 2),
+                "processedClaims": len(scores),
+            }
+            for month, scores in sorted(trend_values.items())
+        ],
     }
 
 
@@ -766,13 +955,10 @@ def get_claims(
     search: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user_optional),
+    user: User = Depends(require_document_reader),
 ):
     """
-    Return claims with organization-scoped access:
-    - Hospital Coordinators only see their hospital's claims.
-    - TPA Reviewers only see their insurance provider's claims.
-    - Admins see all claims.
+    Return claims scoped to claimant ownership or exact TPA organization.
     """
     query = (
         db.query(Claim, Patient, Policy)
@@ -780,21 +966,7 @@ def get_claims(
         .join(Policy, Claim.policy_id == Policy.id)
     )
 
-    # 1. Organization-level scoping (Admin sees all)
-    if user and user.role != "Admin":
-        if user.role == "Coordinator" or user.portal == "Hospital":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.filter(
-                    or_(
-                        Claim.hospital_name.ilike(f"%{user_org}%"),
-                        Claim.created_by == user.id,
-                    )
-                )
-        elif user.role == "Reviewer" or user.portal == "TPA":
-            user_org = (user.organization or "").strip()
-            if user_org:
-                query = query.filter(Policy.insurance_provider.ilike(f"%{user_org}%"))
+    query = apply_claim_scope(query, user)
 
     # 2. Status filter
     if status_filter and status_filter.lower() != "all":
@@ -838,7 +1010,7 @@ def get_claims(
 def get_claim(
     claim_id: str,
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user_optional),
+    user: User = Depends(require_document_reader),
 ):
     """
     Return one comprehensive claim using its UUID OR human-readable claim_number.
@@ -873,17 +1045,11 @@ def get_claim(
         )
 
     # 3. Enforce Server-Side Authorization Boundary
-    if user and not check_claim_access(claim, policy, user):
-        if user.role == "Coordinator" or user.portal == "Hospital":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access Denied: Claim belongs to '{claim.hospital_name or 'another hospital'}', not '{user.organization}'.",
-            )
-        elif user.role == "Reviewer" or user.portal == "TPA":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access Denied: Claim belongs to '{policy.insurance_provider}', which is outside your assigned TPA scope '{user.organization}'.",
-            )
+    if not check_claim_access(claim, policy, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This claim is outside your authorized organization.",
+        )
 
     documents = db.query(ClaimDocument).filter(ClaimDocument.claim_id == claim.id).all()
 
@@ -905,11 +1071,11 @@ def get_claim(
 def create_claim(
     claim_data: CreateClaimRequest,
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(get_current_user_optional),
+    user: User = Depends(require_claimant),
 ):
     """
     Create a new Claim, Patient, Policy, and initial ClaimHistory record.
-    Associates the claim with the creator's hospital and user ID.
+    Associates the claim only with the authenticated claimant.
     """
     try:
         # 1. Patient full name
@@ -931,9 +1097,6 @@ def create_claim(
 
         # 3. Hospital name
         hospital_name = (claim_data.hospital or "").strip()
-        if not hospital_name and user and user.organization and (user.role == "Coordinator" or user.portal == "Hospital"):
-            hospital_name = user.organization.strip()
-
         if not hospital_name:
             raise HTTPException(status_code=422, detail="Hospital / provider name is required.")
         if len(hospital_name) < 2 or len(hospital_name) > 150:
@@ -991,18 +1154,6 @@ def create_claim(
             policy = Policy(policy_number=policy_num, insurance_provider=provider_name)
             db.add(policy)
             db.flush()
-        elif provider_name and policy.insurance_provider != provider_name:
-            policy.insurance_provider = provider_name
-            db.flush()
-
-        # Parse or generate Claim ID
-        claim_id = None
-        if claim_data.id:
-            try:
-                claim_id = uuid.UUID(claim_data.id)
-            except (ValueError, TypeError):
-                claim_id = None
-
         claim_num = generate_claim_number()
 
         # Create Claim with hospital_name
@@ -1014,14 +1165,11 @@ def create_claim(
             "admission_date": adm_date,
             "discharge_date": dis_date,
             "claimed_amount": Decimal(str(claimed_val)),
-            "claim_status": claim_data.status or "Under Analysis",
-            "current_stage": claim_data.stage or "01 Secure Document Intake",
-            "readiness_score": Decimal(str(claim_data.readiness or 0)),
-            "created_by": user.id if user else None,
+            "claim_status": "Under Analysis",
+            "current_stage": "01 Secure Document Intake",
+            "readiness_score": Decimal("0"),
+            "created_by": user.id,
         }
-        if claim_id:
-            claim_kwargs["id"] = claim_id
-
         claim = Claim(**claim_kwargs)
         db.add(claim)
         db.flush()
@@ -1033,7 +1181,7 @@ def create_claim(
             "diagnosis_code": (claim_data.diagnosisCode or "").strip(),
             "diagnosis_code_system": (claim_data.diagnosisCodeSystem or "ICD-10").strip(),
             "clinical_notes": (claim_data.clinicalNotes or "").strip(),
-            "stage": claim_data.stage or "01 Secure Document Intake",
+            "stage": "01 Secure Document Intake",
         }
         history_entry = ClaimHistory(
             claim_id=claim.id,
@@ -1043,9 +1191,17 @@ def create_claim(
             new_stage=claim.current_stage,
             action="Claim Created",
             remarks=json.dumps(creation_remarks),
-            performed_by=user.id if user else None,
+            performed_by=user.id,
         )
         db.add(history_entry)
+        db.add(
+            AuditEvent(
+                event_type="claim_created",
+                actor_user_id=user.id,
+                claim_id=claim.id,
+                details={"claim_number": claim.claim_number},
+            )
+        )
 
         db.commit()
 
@@ -1065,9 +1221,9 @@ def create_claim(
     except HTTPException:
         db.rollback()
         raise
-    except Exception as exc:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Claim creation failed: {str(exc)}")
+        raise HTTPException(status_code=500, detail="Claim creation failed.")
 
 
 # =========================================================
@@ -1079,8 +1235,9 @@ def get_tpa_review_queue(
     queue_filter: str = Query("pending_review"),  # pending_review, low_confidence, validation_mismatch, missing_documents, policy_review_required, info_requested, escalated, all
     hospital_filter: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, max_length=150),
     db: Session = Depends(get_db),
-    user: User = Depends(require_tpa_reviewer),
+    user: User = Depends(require_claims_officer),
 ):
     """
     TPA Review Queue for authorized reviewers.
@@ -1094,10 +1251,18 @@ def get_tpa_review_queue(
     )
 
     # Organization scoping
-    if user.role != "Admin":
-        user_org = (user.organization or "").strip()
-        if user_org:
-            query = query.filter(Policy.insurance_provider.ilike(f"%{user_org}%"))
+    query = apply_claim_scope(query, user)
+
+    if search and search.strip():
+        search_pattern = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Claim.claim_number.ilike(search_pattern),
+                Patient.full_name.ilike(search_pattern),
+                Claim.hospital_name.ilike(search_pattern),
+                Policy.policy_number.ilike(search_pattern),
+            )
+        )
 
     if hospital_filter:
         query = query.filter(Claim.hospital_name.ilike(f"%{hospital_filter}%"))
@@ -1127,6 +1292,15 @@ def get_tpa_review_queue(
         )
         .all()
     }
+    pending_amendments = {
+        amendment.claim_id
+        for amendment in db.query(ClaimAmendment)
+        .filter(
+            ClaimAmendment.claim_id.in_(claim_ids),
+            ClaimAmendment.status == "Pending",
+        )
+        .all()
+    }
 
     queue_items = []
     for claim, patient, policy in rows:
@@ -1145,6 +1319,8 @@ def get_tpa_review_queue(
 
         # Determine why it entered review
         reasons = []
+        if claim.id in pending_amendments:
+            reasons.append("Pending claimant amendment requires review")
         if claim.claim_status == "Needs Review":
             reasons.append("Claim flagged for adjudicator review")
         if mismatches:
@@ -1159,7 +1335,10 @@ def get_tpa_review_queue(
         # Apply queue filter
         include = True
         if queue_filter == "pending_review":
-            include = claim.claim_status in {"Needs Review", "Under Analysis"} and len(reasons) > 0
+            include = (
+                claim.claim_status in {"Needs Review", "Under Analysis"}
+                and len(reasons) > 0
+            )
         elif queue_filter == "low_confidence":
             include = conf_score is not None and conf_score < 85.0
         elif queue_filter == "validation_mismatch":
@@ -1206,12 +1385,11 @@ def update_claim_status(
     claim_id: str,
     status_data: UpdateClaimStatusRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_tpa_reviewer),
+    user: User = Depends(require_claims_officer),
 ):
     """
     Execute an official TPA adjudicator decision.
-    Strictly restricted to authorized TPA Reviewers and Admins.
-    Hospital coordinators calling this will receive HTTP 403 Forbidden.
+    Strictly restricted to organization-authorized claims officers.
     Persists status change and auditable ClaimHistory entry to Neon PostgreSQL.
     """
     claim = None
@@ -1231,25 +1409,47 @@ def update_claim_status(
     if not policy:
         raise HTTPException(status_code=500, detail="Claim policy relationship missing.")
 
-    # TPA Organization boundary verification
-    if user.role != "Admin":
-        user_org = (user.organization or "").strip().lower()
-        insurer = (policy.insurance_provider or "").strip().lower()
-        if user_org and user_org not in insurer and insurer not in user_org:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Forbidden: Claim insurer '{policy.insurance_provider}' is outside your authorized TPA scope '{user.organization}'.",
-            )
+    if not check_claim_access(claim, policy, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This claim is outside your authorized TPA scope.",
+        )
 
-    action = status_data.action.strip()
+    action = status_data.action
 
-    # Prerequisites & Validation
-    if action == "Reject":
-        if not status_data.note or not status_data.note.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="A recorded rejection rationale is mandatory before rejecting a claim.",
-            )
+    if not status_data.note or not status_data.note.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="A decision reason is required for every review action.",
+        )
+    if claim.claim_status in {"Approved", "Rejected"}:
+        raise HTTPException(
+            status_code=409,
+            detail="A final decision has already been recorded for this claim.",
+        )
+    pending_amendment = (
+        db.query(ClaimAmendment)
+        .filter(
+            ClaimAmendment.claim_id == claim.id,
+            ClaimAmendment.status == "Pending",
+        )
+        .first()
+    )
+    if pending_amendment and status_data.action in {"Approve", "Reject"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Review the pending claimant amendment before recording a final decision.",
+        )
+    if action == "RequestInfo" and not status_data.requestedDocuments:
+        raise HTTPException(
+            status_code=422,
+            detail="Specify the additional evidence or information required.",
+        )
+    if action == "Escalate" and not (status_data.destination or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Specify the escalation destination.",
+        )
 
     if action == "Approve":
         if claim.claim_status == "Approved":
@@ -1282,11 +1482,13 @@ def update_claim_status(
         claim.current_stage = "10 Needs Review — Escalated to Senior Adjudicator"
 
     # Persist ClaimHistory audit record in Neon PostgreSQL
-    remarks_text = status_data.note or f"Action {action} executed by TPA Reviewer {user.full_name}"
+    remarks_text = status_data.note.strip()
     if status_data.policyReference:
         remarks_text += f" | Policy Ref: {status_data.policyReference}"
     if status_data.destination:
         remarks_text += f" | Escalation Destination: {status_data.destination}"
+    if status_data.requestedDocuments:
+        remarks_text += " | Requested: " + ", ".join(status_data.requestedDocuments)
 
     history_entry = ClaimHistory(
         claim_id=claim.id,
@@ -1299,6 +1501,19 @@ def update_claim_status(
         performed_by=user.id,
     )
     db.add(history_entry)
+    db.add(
+        AuditEvent(
+            event_type=f"claim_{action.lower()}",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={
+                "action": action,
+                "previous_status": previous_status,
+                "new_status": claim.claim_status,
+                "requested_documents": status_data.requestedDocuments or [],
+            },
+        )
+    )
 
     db.commit()
     db.refresh(claim)
@@ -1316,6 +1531,224 @@ def update_claim_status(
     }
 
 
+@router.get("/{claim_id}/amendments")
+def get_claim_amendments(
+    claim_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_document_reader),
+):
+    claim = _get_claim_by_identifier(db, claim_id)
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first()
+    if not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(status_code=403, detail="This claim is outside your authorized scope.")
+
+    amendments = (
+        db.query(ClaimAmendment)
+        .filter(ClaimAmendment.claim_id == claim.id)
+        .order_by(ClaimAmendment.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": str(amendment.id),
+            "requestedChanges": amendment.requested_changes,
+            "originalValues": amendment.original_values,
+            "reason": amendment.reason,
+            "status": amendment.status,
+            "reviewNote": amendment.review_note,
+            "createdAt": amendment.created_at.isoformat() if amendment.created_at else None,
+            "reviewedAt": amendment.reviewed_at.isoformat() if amendment.reviewed_at else None,
+        }
+        for amendment in amendments
+    ]
+
+
+@router.post("/{claim_id}/amendments", status_code=status.HTTP_201_CREATED)
+def request_claim_amendment(
+    claim_id: str,
+    amendment_data: ClaimAmendmentRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_claimant),
+):
+    claim = _get_claim_by_identifier(db, claim_id)
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first()
+    if not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(status_code=403, detail="This claim is outside your authorized scope.")
+    if claim.claim_status in {"Approved", "Rejected"}:
+        raise HTTPException(status_code=409, detail="Finalized claims cannot be amended.")
+    if not amendment_data.reason.strip():
+        raise HTTPException(status_code=422, detail="An amendment reason is required.")
+
+    allowed_fields = {
+        "patientName",
+        "hospital",
+        "admissionDate",
+        "dischargeDate",
+        "claimedAmount",
+    }
+    changes = amendment_data.changes
+    if not changes or not set(changes).issubset(allowed_fields):
+        raise HTTPException(
+            status_code=422,
+            detail="Amendments may change only patientName, hospital, admissionDate, dischargeDate, or claimedAmount.",
+        )
+
+    patient = db.query(Patient).filter(Patient.id == claim.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=500, detail="Claim patient relationship is incomplete.")
+    original_values: Dict[str, Any] = {
+        "patientName": patient.full_name,
+        "hospital": claim.hospital_name,
+        "admissionDate": claim.admission_date.isoformat() if claim.admission_date else None,
+        "dischargeDate": claim.discharge_date.isoformat() if claim.discharge_date else None,
+        "claimedAmount": float(claim.claimed_amount),
+    }
+
+    normalized_changes: Dict[str, Any] = {}
+    for key, value in changes.items():
+        if key in {"patientName", "hospital"}:
+            text_value = str(value).strip()
+            if not text_value or len(text_value) > 150:
+                raise HTTPException(status_code=422, detail=f"{key} must contain 1 to 150 characters.")
+            normalized_changes[key] = text_value
+        elif key in {"admissionDate", "dischargeDate"}:
+            parsed_date = parse_date(str(value))
+            normalized_changes[key] = parsed_date.isoformat() if parsed_date else None
+        else:
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail="claimedAmount must be a positive number.")
+            if not math.isfinite(amount) or amount <= 0 or amount > 100_000_000:
+                raise HTTPException(status_code=422, detail="claimedAmount must be a positive valid amount.")
+            normalized_changes[key] = amount
+
+    admission_value = normalized_changes.get("admissionDate", original_values["admissionDate"])
+    discharge_value = normalized_changes.get("dischargeDate", original_values["dischargeDate"])
+    if (
+        admission_value
+        and discharge_value
+        and date.fromisoformat(admission_value) > date.fromisoformat(discharge_value)
+    ):
+        raise HTTPException(status_code=422, detail="Admission date cannot be after discharge date.")
+
+    pending = (
+        db.query(ClaimAmendment)
+        .filter(
+            ClaimAmendment.claim_id == claim.id,
+            ClaimAmendment.status == "Pending",
+        )
+        .first()
+    )
+    if pending:
+        raise HTTPException(status_code=409, detail="A claim amendment is already awaiting review.")
+
+    amendment = ClaimAmendment(
+        claim_id=claim.id,
+        requested_by=user.id,
+        requested_changes=normalized_changes,
+        original_values=original_values,
+        reason=amendment_data.reason.strip(),
+        status="Pending",
+    )
+    db.add(amendment)
+    db.flush()
+    db.add(
+        AuditEvent(
+            event_type="claim_amendment_requested",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={"amendment_id": str(amendment.id), "fields": sorted(normalized_changes)},
+        )
+    )
+    db.commit()
+    return {
+        "id": str(amendment.id),
+        "status": amendment.status,
+        "requestedChanges": amendment.requested_changes,
+        "originalValues": amendment.original_values,
+    }
+
+
+@router.patch("/amendments/{amendment_id}")
+def review_claim_amendment(
+    amendment_id: str,
+    decision_data: ClaimAmendmentDecisionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_claims_officer),
+):
+    try:
+        amendment_uuid = uuid.UUID(amendment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid amendment ID.")
+    amendment = (
+        db.query(ClaimAmendment)
+        .filter(ClaimAmendment.id == amendment_uuid)
+        .with_for_update()
+        .first()
+    )
+    if not amendment:
+        raise HTTPException(status_code=404, detail="Claim amendment not found.")
+    claim = db.query(Claim).filter(Claim.id == amendment.claim_id).first()
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first() if claim else None
+    if not claim or not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(status_code=403, detail="This amendment is outside your authorized TPA scope.")
+    if amendment.status != "Pending":
+        raise HTTPException(status_code=409, detail="This amendment has already been reviewed.")
+    if not decision_data.note.strip():
+        raise HTTPException(status_code=422, detail="A review reason is required.")
+
+    if decision_data.decision == "Approve":
+        patient = db.query(Patient).filter(Patient.id == claim.patient_id).first()
+        if not patient:
+            raise HTTPException(status_code=500, detail="Claim patient relationship is incomplete.")
+        changes = amendment.requested_changes
+        if "patientName" in changes:
+            patient.full_name = changes["patientName"]
+        if "hospital" in changes:
+            claim.hospital_name = changes["hospital"]
+        if "admissionDate" in changes:
+            claim.admission_date = date.fromisoformat(changes["admissionDate"])
+        if "dischargeDate" in changes:
+            claim.discharge_date = date.fromisoformat(changes["dischargeDate"])
+        if "claimedAmount" in changes:
+            claim.claimed_amount = Decimal(str(changes["claimedAmount"]))
+        amendment.status = "Approved"
+    else:
+        amendment.status = "Rejected"
+
+    now = datetime.utcnow()
+    amendment.reviewed_by = user.id
+    amendment.review_note = decision_data.note.strip()
+    amendment.reviewed_at = now
+    db.add(
+        ClaimHistory(
+            claim_id=claim.id,
+            previous_status=claim.claim_status,
+            new_status=claim.claim_status,
+            previous_stage=claim.current_stage,
+            new_stage=claim.current_stage,
+            action=f"Claim Amendment {amendment.status}",
+            remarks=amendment.review_note,
+            performed_by=user.id,
+        )
+    )
+    db.add(
+        AuditEvent(
+            event_type=f"claim_amendment_{amendment.status.lower()}",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={"amendment_id": str(amendment.id), "fields": sorted(amendment.requested_changes)},
+        )
+    )
+    db.commit()
+    return {
+        "id": str(amendment.id),
+        "status": amendment.status,
+        "reviewNote": amendment.review_note,
+    }
+
+
 # =========================================================
 # HOSPITAL ACTION: RESPOND TO TPA INFORMATION REQUEST
 # (ALLOWED FOR HOSPITAL COORDINATORS)
@@ -1326,10 +1759,10 @@ def hospital_respond_info(
     claim_id: str,
     response_data: HospitalResponseRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_claimant),
 ):
     """
-    Hospital coordinator submits responses or documents to satisfy TPA requests.
+    Claimant submits a response to a TPA information request.
     Updates claim status back to Under Analysis / Hospital Response Submitted.
     """
     claim = None
@@ -1344,6 +1777,13 @@ def hospital_respond_info(
 
     if not claim:
         raise HTTPException(status_code=404, detail=f"Claim '{claim_id}' not found.")
+
+    policy = db.query(Policy).filter(Policy.id == claim.policy_id).first()
+    if not policy or not check_claim_access(claim, policy, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This claim is outside your authorized hospital scope.",
+        )
 
     previous_status = claim.claim_status
     previous_stage = claim.current_stage
@@ -1366,6 +1806,14 @@ def hospital_respond_info(
         performed_by=user.id,
     )
     db.add(history_entry)
+    db.add(
+        AuditEvent(
+            event_type="claim_information_submitted",
+            actor_user_id=user.id,
+            claim_id=claim.id,
+            details={"submitted_document_count": len(response_data.submittedDocuments or [])},
+        )
+    )
 
     db.commit()
     db.refresh(claim)

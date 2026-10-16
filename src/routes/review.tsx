@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import React, { useState, useEffect } from "react";
 import {
   UserCheck,
@@ -19,10 +19,9 @@ import {
 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { HumanReviewTriage } from "@/components/pipeline/HumanReviewTriage";
-import { Claim, formatINR } from "@/lib/claims";
+import { Claim, convertApiClaimToClaim, formatINR } from "@/lib/claims";
 import {
   fetchClaimById,
-  fetchClaims,
   fetchTpaReviewQueue,
   fetchClaimsSummary,
   TpaQueueItem,
@@ -56,18 +55,17 @@ type TpaFilterType =
 
 function HumanReviewPage() {
   const currentUser = getCurrentUser();
-  const isHospitalCoordinator =
-    !currentUser ||
-    currentUser.portal === "Hospital" ||
-    currentUser.role === "Coordinator";
+  const navigate = useNavigate();
+  const isClaimant = currentUser?.role === "claimant";
 
   const [tpaFilter, setTpaFilter] = useState<TpaFilterType>("pending_review");
   const [tpaQueue, setTpaQueue] = useState<TpaQueueItem[]>([]);
-  const [hospitalClaims, setHospitalClaims] = useState<any[]>([]);
   const [selectedClaimId, setSelectedClaimId] = useState<string>("");
   const [activeClaim, setActiveClaim] = useState<Claim | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingClaim, setLoadingClaim] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [claimError, setClaimError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"recent" | "amount" | "readiness">("recent");
 
@@ -76,6 +74,9 @@ function HumanReviewPage() {
     approvedClaims: 0,
     rejectedClaims: 0,
     pendingClaims: 0,
+    pendingReviewClaims: 0,
+    awaitingInformationClaims: 0,
+    escalatedClaims: 0,
     averageReadinessScore: 0,
   });
 
@@ -83,29 +84,33 @@ function HumanReviewPage() {
   const loadQueue = async () => {
     setLoading(true);
     try {
-      const [sum, claimsList, queueItems] = await Promise.all([
-        fetchClaimsSummary().catch(() => null),
-        isHospitalCoordinator ? fetchClaims().catch(() => []) : null,
-        !isHospitalCoordinator ? fetchTpaReviewQueue(tpaFilter).catch(() => []) : null,
-      ]);
-
-      if (sum) {
-        setSummary(sum);
+      if (!currentUser) {
+        navigate({ to: "/auth" });
+        return;
       }
-
-      if (isHospitalCoordinator && claimsList) {
-        setHospitalClaims(claimsList);
-        if (!selectedClaimId && claimsList.length > 0) {
-          setSelectedClaimId(claimsList[0].id);
-        }
-      } else if (queueItems) {
-        setTpaQueue(queueItems);
-        if (!selectedClaimId && queueItems.length > 0) {
-          setSelectedClaimId(queueItems[0].id);
-        }
+      if (isClaimant) {
+        navigate({ to: "/claims" });
+        return;
+      }
+      if (currentUser.role !== "claims_officer") {
+        navigate({ to: "/auth" });
+        return;
+      }
+      setQueueError("");
+      const [sum, queueItems] = await Promise.all([
+        fetchClaimsSummary(),
+        fetchTpaReviewQueue(tpaFilter, undefined, undefined, searchQuery),
+      ]);
+      setSummary(sum);
+      setTpaQueue(queueItems);
+      if (!queueItems.some((item) => item.id === selectedClaimId)) {
+        setSelectedClaimId(queueItems[0]?.id || "");
+      }
+      if (!selectedClaimId && queueItems.length > 0) {
+        setSelectedClaimId(queueItems[0]?.id || "");
       }
     } catch (err) {
-      console.warn("Failed to load review queue:", err);
+      setQueueError(err instanceof Error ? err.message : "Unable to load the TPA review queue.");
     } finally {
       setLoading(false);
     }
@@ -113,27 +118,29 @@ function HumanReviewPage() {
 
   useEffect(() => {
     loadQueue();
-  }, [tpaFilter, isHospitalCoordinator]);
+  }, [tpaFilter, searchQuery, isClaimant, currentUser?.id]);
 
   // Load Selected Claim Details
   useEffect(() => {
     if (!selectedClaimId) return;
     setLoadingClaim(true);
+    setClaimError("");
     fetchClaimById(selectedClaimId)
-      .then((data: any) => {
+      .then((data) => {
         if (data) {
-          setActiveClaim(data as any);
+          setActiveClaim(convertApiClaimToClaim(data));
         }
       })
       .catch((err) => {
-        console.warn("Error fetching claim details:", err);
+        setActiveClaim(null);
+        setClaimError(err instanceof Error ? err.message : "Unable to load claim details.");
       })
       .finally(() => {
         setLoadingClaim(false);
       });
   }, [selectedClaimId]);
 
-  const rawItems = isHospitalCoordinator ? hospitalClaims : tpaQueue;
+  const rawItems = tpaQueue;
   const filteredItems = rawItems
     .filter((item) => {
       if (!searchQuery.trim()) return true;
@@ -157,7 +164,7 @@ function HumanReviewPage() {
 
   return (
     <AppLayout
-      title={isHospitalCoordinator ? "Hospital Review & Response Desk" : "TPA Adjudication & Triage Desk"}
+      title="Claims Officer Review Desk"
       breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "Human Review" }]}
     >
       <div className="space-y-6">
@@ -171,18 +178,14 @@ function HumanReviewPage() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-foreground">
-                  {isHospitalCoordinator
-                    ? `Hospital Claims Triage (${summary.totalClaims || hospitalClaims.length} Claims)`
-                    : `TPA Review Queue (${summary.totalClaims || tpaQueue.length} Claims Total)`}
+                  {`TPA Review Queue (${summary.totalClaims} Claims Total)`}
                 </h2>
                 <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] text-primary">
-                  {currentUser?.organization || (isHospitalCoordinator ? "Hospital Scope" : "TPA Scope")}
+                  {currentUser?.organization || "Organization scope unavailable"}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">
-                {isHospitalCoordinator
-                  ? "Monitor claims requiring clarification, upload requested evidence, and review validation status."
-                  : "Adjudicate incoming claims, inspect multi-document evidence, request info, or approve/reject."}
+                Adjudicate authorized claims, inspect evidence, request information, or record a reasoned decision.
               </p>
             </div>
           </div>
@@ -194,6 +197,12 @@ function HumanReviewPage() {
             <RefreshCw className="size-3.5" /> Refresh Queue
           </button>
         </div>
+
+        {queueError && (
+          <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+            {queueError}
+          </div>
+        )}
 
         {/* OPERATIONAL SUMMARY ANALYTICS CARDS (DERIVED DIRECTLY FROM DATABASE) */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -311,7 +320,7 @@ function HumanReviewPage() {
         </div>
 
         {/* TPA FILTER BAR (FOR TPA REVIEWERS) */}
-        {!isHospitalCoordinator && (
+        {!isClaimant && (
           <div className="flex flex-wrap gap-1.5 rounded-2xl border border-border bg-card p-2 shadow-sm">
             {[
               { id: "pending_review", label: "Pending Review" },
@@ -358,8 +367,6 @@ function HumanReviewPage() {
               <p className="text-xs text-muted-foreground max-w-md">
                 {searchQuery
                   ? `No claims matched your search "${searchQuery}". Try clearing the search query or changing the filter.`
-                  : isHospitalCoordinator
-                  ? "All claims submitted by your hospital are currently processed or under review. No outstanding action required."
                   : `No claims match the filter '${tpaFilter}' within your assigned TPA scope.`}
               </p>
             </div>
@@ -428,6 +435,10 @@ function HumanReviewPage() {
         {loadingClaim ? (
           <div className="rounded-2xl border border-border bg-card p-12 text-center text-xs text-muted-foreground">
             Loading full claim evidence and document package...
+          </div>
+        ) : claimError ? (
+          <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-xs text-rose-700 dark:text-rose-300">
+            {claimError}
           </div>
         ) : activeClaim ? (
           <HumanReviewTriage claim={activeClaim} onStatusUpdated={loadQueue} />

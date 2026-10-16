@@ -180,6 +180,10 @@ export interface ClaimFormState {
   claimedAmount: string;
 }
 
+export type ClaimFormErrors = Partial<
+  Record<keyof ClaimFormState | "diagnosis", string>
+>;
+
 /**
  * Validation Functions
  */
@@ -350,9 +354,9 @@ export function validateDiagnosis(
 
 export function validateClaimForm(form: ClaimFormState): {
   isValid: boolean;
-  errors: Record<string, string>;
+  errors: ClaimFormErrors;
 } {
-  const errors: Record<string, string> = {};
+  const errors: ClaimFormErrors = {};
 
   const nameErr = validatePatientName(form.patientName);
   if (nameErr) errors.patientName = nameErr;

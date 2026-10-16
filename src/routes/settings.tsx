@@ -19,7 +19,7 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   const [apiEndpoint, setApiEndpoint] = useState(
-    import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1"
+    import.meta.env["VITE_API_BASE_URL"] || "http://localhost:8001"
   );
   const [ocrThreshold, setOcrThreshold] = useState("95");
   const [ragSimilarity, setRagSimilarity] = useState("0.75");

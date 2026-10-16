@@ -62,12 +62,13 @@ export type ClaimDocument = {
   id?: string;
   category: DocCategory | string;
   fileName: string;
-  status: "Verified" | "Processing" | "Missing" | "Mismatch";
+  status: "Verified" | "Processing" | "Missing" | "Mismatch" | "Failed";
   note?: string;
   fileSize?: string;
   file?: File;
   detectedCategory?: string;
   confidence?: number;
+  ocrConfidence?: number | null;
   extractedFields?: Record<string, any>;
 };
 
@@ -123,6 +124,8 @@ export type Claim = {
   validationReadiness: number; // e.g. 100%
   overallConfidence: number; // e.g. 83.36% (Medium)
   claimNumber?: string;
+  createdAt?: string | null;
+  routeDecision?: "Auto Approval Eligible" | "Human Review Required";
   routeReasons?: string[];
   pipelineStages?: any[];
   fieldValidationTable?: any[];
@@ -133,7 +136,7 @@ export type Claim = {
   history?: any[];
 
   documents: ClaimDocument[];
-  findings: { label: string; detail: string; severity: "ok" | "warn" | "error" }[];
+  findings: { label: string; detail: string; severity: "ok" | "warn" | "warning" | "error" }[];
   medicalServices: MedicalServiceItem[];
   policyClauses: PolicyClauseEvidence[];
   ocrLines: OcrLine[];
@@ -299,7 +302,7 @@ const seed: Claim[] = [
     diagnosis: "Acute Appendicitis — Laparoscopic Appendectomy",
     claimedAmount: 184500,
     status: "Ready for Submission",
-    stage: "11 Final Decision",
+    stage: "12 Final Claim Decision",
     readiness: 94.5,
     ocrConfidence: 99.1,
     classification: "Hospital Bill & Discharge Summary (95%)",
@@ -346,7 +349,7 @@ const seed: Claim[] = [
     diagnosis: "Coronary Artery Disease — Angioplasty with DES Stent",
     claimedAmount: 412000,
     status: "Needs Review",
-    stage: "08 Cross-Validation Engine",
+    stage: "08 Validation Engine",
     readiness: 61.2,
     ocrConfidence: 96.4,
     classification: "Hospital Bill & Angiography Report (88%)",
@@ -355,7 +358,7 @@ const seed: Claim[] = [
     policyConfidence: 58.0,
     validationReadiness: 55.0,
     overallConfidence: 62.4,
-    routeDecision: "Escalation Flagged",
+    routeDecision: "Human Review Required",
     documents: [
       { category: "Insurance Card", fileName: "hdfc_ergo_card.jpg", status: "Verified" },
       { category: "Discharge Summary", fileName: "cardiac_summary.pdf", status: "Verified" },

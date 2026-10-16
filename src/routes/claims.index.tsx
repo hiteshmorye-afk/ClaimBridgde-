@@ -14,9 +14,12 @@ import {
   FileCheck,
 } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { useClaims, formatINR, syncClaimsFromBackend } from "@/lib/claims";
+import { formatINR } from "@/lib/claims";
 import { fetchClaims } from "@/api/claims";
 import { generateClaimPDFReport } from "@/api/integrations";
+import { getCurrentUser } from "@/api/auth";
+import type { ClaimApiData } from "@/api/claims";
+import { useNavigate } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/claims/")({
   head: () => ({
@@ -32,26 +35,45 @@ export const Route = createFileRoute("/claims/")({
 });
 
 function ClaimsIndexPage() {
-  const claims = useClaims();
+  const navigate = useNavigate();
+  const currentUser = getCurrentUser();
+  const isClaimant = currentUser?.role === "claimant";
+  const [claims, setClaims] = useState<ClaimApiData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
 
   React.useEffect(() => {
+    if (!currentUser) {
+      navigate({ to: "/auth" });
+      return;
+    }
+    let active = true;
+    setLoading(true);
     fetchClaims()
       .then((data) => {
-        if (data && Array.isArray(data)) {
-          syncClaimsFromBackend(data);
+        if (active) setClaims(Array.isArray(data) ? data : []);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setLoadError(error instanceof Error ? error.message : "Unable to load claims.");
         }
       })
-      .catch(() => {});
-  }, []);
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.id, navigate]);
 
   const filtered = claims.filter((c) => {
     const matches =
-      c.patientName.toLowerCase().includes(search.toLowerCase()) ||
-      c.id.toLowerCase().includes(search.toLowerCase()) ||
-      c.policyNumber.toLowerCase().includes(search.toLowerCase()) ||
-      c.hospital.toLowerCase().includes(search.toLowerCase());
+      (c.patientName || "").toLowerCase().includes(search.toLowerCase()) ||
+      (c.claimNumber || c.id).toLowerCase().includes(search.toLowerCase()) ||
+      (c.policyNumber || "").toLowerCase().includes(search.toLowerCase()) ||
+      (c.hospital || "").toLowerCase().includes(search.toLowerCase());
     if (statusFilter === "All") return matches;
     return matches && c.status === statusFilter;
   });
@@ -74,38 +96,64 @@ function ClaimsIndexPage() {
 
   return (
     <AppLayout
-      title="Claims Portfolio"
-      breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "Claims" }]}
+      title={isClaimant ? "My Claims" : "Organization Claims"}
+      breadcrumbs={[{ label: "Dashboard", href: isClaimant ? "/claims" : "/" }, { label: "Claims" }]}
     >
       <div className="space-y-6">
         
         {/* HEADING & ACTIONS */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white">Active Claims Directory</h1>
+            <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white">
+              {isClaimant ? "My Claims" : "Authorized Claims"}
+            </h1>
             <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
-              Comprehensive portfolio management for all intake, verified & pending review claims.
+              {isClaimant
+                ? "Track your submitted claims, outstanding actions, and recorded decisions."
+                : "Claims returned by the backend for your authorized TPA organization only."}
             </p>
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => generateClaimPDFReport("ALL-CLAIMS")}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] px-4 text-xs font-semibold text-slate-700 dark:text-white hover:border-[#3B82F6]"
-            >
-              <Download className="size-4 text-[#3B82F6]" />
-              Export Portfolio
-            </button>
+            {!isClaimant && (
+              <button
+                onClick={() => generateClaimPDFReport("AUTHORIZED-TPA-CLAIMS")}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] px-4 text-xs font-semibold text-slate-700 dark:text-white hover:border-[#3B82F6]"
+              >
+                <Download className="size-4 text-[#3B82F6]" />
+                Export Authorized Claims
+              </button>
+            )}
 
-            <Link
-              to="/claims/new"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-4 text-xs font-semibold text-white shadow-md shadow-[#3B82F6]/30"
-            >
-              <Plus className="size-4" />
-              New Claim
-            </Link>
+            {isClaimant && (
+              <Link
+                to="/claims/new"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-4 text-xs font-semibold text-white shadow-md shadow-[#3B82F6]/30"
+              >
+                <Plus className="size-4" />
+                Add Claim
+              </Link>
+            )}
           </div>
         </div>
+
+        {isClaimant && (
+          <section className="grid gap-3 sm:grid-cols-3">
+            {[
+              { label: "My claims", value: claims.length, icon: FileSpreadsheet },
+              { label: "Pending actions", value: claims.filter((claim) => !["Approved", "Rejected"].includes(claim.status)).length, icon: Clock },
+              { label: "Recorded decisions", value: claims.filter((claim) => ["Approved", "Rejected"].includes(claim.status)).length, icon: CheckCircle2 },
+            ].map(({ label, value, icon: Icon }) => (
+              <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-[#1F2937] dark:bg-[#111827]">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-500 dark:text-[#9CA3AF]">{label}</span>
+                  <Icon className="size-4 text-[#3B82F6]" />
+                </div>
+                <p className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* SEARCH & FILTERS */}
         <div className="flex flex-col gap-4 rounded-2xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
@@ -153,7 +201,15 @@ function ClaimsIndexPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-[#1F2937] text-xs">
-                {filtered.map((claim) => (
+                {loadError ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-sm text-rose-500">{loadError}</td></tr>
+                ) : loading ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-500">Loading authorized claims…</td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-500">
+                    {isClaimant ? "No claims have been submitted for your account yet." : "No claims are available in your authorized scope."}
+                  </td></tr>
+                ) : filtered.map((claim) => (
                   <tr key={claim.id} className="transition hover:bg-slate-50 dark:hover:bg-[#1F2937]/40">
                     <td className="px-6 py-4">
                       <Link
@@ -161,7 +217,7 @@ function ClaimsIndexPage() {
                         params={{ claimId: claim.id }}
                         className="font-mono font-bold text-[#3B82F6] hover:underline"
                       >
-                        {claim.id}
+                        {claim.claimNumber || claim.id}
                       </Link>
                       <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">{claim.stage}</p>
                     </td>
@@ -194,7 +250,7 @@ function ClaimsIndexPage() {
                           />
                         </div>
                         <span className="font-mono font-bold text-slate-900 dark:text-white">
-                          {claim.readiness}%
+                          {claim.readiness == null ? "Not assessed" : `${claim.readiness}%`}
                         </span>
                       </div>
                     </td>

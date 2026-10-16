@@ -40,10 +40,10 @@ function DocumentsPage() {
   const loadDocuments = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchDocuments({
-        search: search.trim() || undefined,
-        category: categoryFilter !== "All" ? categoryFilter : undefined,
-      });
+      const filters: { search?: string; category?: string } = {};
+      if (search.trim()) filters.search = search.trim();
+      if (categoryFilter !== "All") filters.category = categoryFilter;
+      const data = await fetchDocuments(filters);
       setDocuments(data || []);
     } catch (err: any) {
       console.warn("Failed to fetch documents:", err);

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Text,
     Numeric,
     ForeignKey,
+    Integer,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -39,6 +40,37 @@ class User(Base):
     role = Column(
         String(50),
         nullable=False,
+    )
+
+    phone = Column(
+        String(20),
+        nullable=True,
+    )
+
+    account_status = Column(
+        String(40),
+        nullable=True,
+    )
+
+    email_verified_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    phone_verified_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    organization_verified_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    provisioned_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     organization = Column(
@@ -474,6 +506,165 @@ class ClaimHistory(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+
+class OtpChallenge(Base):
+    __tablename__ = "otp_challenges"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    purpose = Column(
+        String(40),
+        nullable=False,
+    )
+
+    recipient_hash = Column(
+        String(64),
+        nullable=False,
+    )
+
+    requester_hash = Column(
+        String(64),
+        nullable=True,
+    )
+
+    code_digest = Column(
+        String(64),
+        nullable=False,
+    )
+
+    attempts = Column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    expires_at = Column(
+        DateTime,
+        nullable=False,
+    )
+
+    consumed_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+
+class ClaimAmendment(Base):
+    __tablename__ = "claim_amendments"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    requested_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    reviewed_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    requested_changes = Column(
+        JSONB,
+        nullable=False,
+    )
+
+    original_values = Column(
+        JSONB,
+        nullable=False,
+    )
+
+    reason = Column(
+        Text,
+        nullable=False,
+    )
+
+    review_note = Column(
+        Text,
+        nullable=True,
+    )
+
+    status = Column(
+        String(30),
+        nullable=False,
+        server_default=text("'Pending'"),
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+    reviewed_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    event_type = Column(
+        String(100),
+        nullable=False,
+    )
+
+    actor_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    details = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
     )
 
     created_at = Column(

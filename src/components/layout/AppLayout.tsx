@@ -22,18 +22,18 @@ export function AppLayout({ children, title, breadcrumbs }: AppLayoutProps) {
     <div className="flex min-h-screen w-full bg-background text-foreground font-sans selection:bg-primary selection:text-white transition-colors duration-200">
       {/* Fixed Left Sidebar */}
       <AppSidebar
-        role={user?.role || "Coordinator"}
-        userName={user?.name || "Coordinator"}
-        userEmail={user?.email || "coordinator@claimbridge.internal"}
+        role={user?.role || "claimant"}
+        userName={user?.name || "Claimant"}
+        userEmail={user?.email || "claimant@example.com"}
       />
 
       {/* Main Content Area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-x-hidden">
         <AppHeader
-          title={title}
-          userName={user?.name || "Hospital Coordinator"}
-          userRole={user?.role || "Coordinator"}
-          breadcrumbs={breadcrumbs}
+          userName={user?.name || "Claimant"}
+          userRole={user?.role || "claimant"}
+          {...(title === undefined ? {} : { title })}
+          {...(breadcrumbs === undefined ? {} : { breadcrumbs })}
         />
         <main className="flex-1 p-6 lg:p-8">
           <div className="mx-auto max-w-[1600px]">{children}</div>

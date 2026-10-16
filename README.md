@@ -328,9 +328,20 @@ Example:
 
 ```env
 DATABASE_URL=your_neon_postgresql_connection_string
+CLAIMBRIDGE_JWT_SECRET=your_private_random_secret_at_least_32_bytes
 ```
 
 This is an illustrative placeholder. Check the existing application configuration for any additional required environment variables.
+
+`CLAIMBRIDGE_JWT_SECRET` is required to start the backend and must contain at least 32 bytes. Keep the same private value across backend restarts so existing signed sessions remain valid. Generate and store it locally; do not put it in frontend variables.
+
+The supported application roles are `claimant` and `claims_officer`. Public claimant registration always assigns `claimant`; the registration API does not issue a session until email verification succeeds. TPA registration creates an inactive applicant only. A typed organization and successful OTP do not authorize TPA access; trusted per-account provisioning is still required.
+
+Email verification requires a real SMTP provider. Configure `CLAIMBRIDGE_SMTP_HOST` and `CLAIMBRIDGE_SMTP_FROM`; configure `CLAIMBRIDGE_SMTP_PORT`, `CLAIMBRIDGE_SMTP_USER`, `CLAIMBRIDGE_SMTP_PASSWORD`, and `CLAIMBRIDGE_SMTP_STARTTLS` when required by the provider. For local development only, `CLAIMBRIDGE_ENV=development` permits a localhost SMTP mail catcher to use unencrypted SMTP. The application does not log or expose OTP codes. If SMTP is not configured or delivery fails, registration fails explicitly; no fake verification path is enabled.
+
+The role-workflow Alembic migration is prepared but has not been run. Existing legacy-role accounts are not converted automatically. The new account activation checks deny legacy accounts until each account is explicitly verified and mapped by an authorized operator. Before using the new auth workflow against an existing database, review the migration and account-mapping impact, then obtain explicit approval to apply it. The provisioning CLI is under `backend/scripts/provision_account.py`; do not run it against a shared or production database without an approved, per-account mapping plan. Legacy built-in demo credentials are no longer seeded.
+
+Claims officers are scoped by case-insensitive exact match between their trusted organization and the claim's policy provider. Existing organization/provider values must therefore be reviewed and canonically provisioned before TPA accounts can access those claims.
 
 **Security:** Never commit `.env` files, database passwords, API keys, authentication secrets, or private medical documents to GitHub.
 
@@ -376,7 +387,7 @@ From the repository root:
 npm run dev
 ```
 
-Open the local URL printed by Vite in the terminal. The port may vary if the default port is already in use.
+Open the local URL printed by Vite in the terminal. The default Vite port may vary if it is in use; FastAPI CORS currently permits ports 8080 and 8081 on localhost.
 
 Ensure that the frontend API configuration and backend CORS settings permit communication between the two local services.
 

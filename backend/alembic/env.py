@@ -1,10 +1,16 @@
-from logging.config import fileConfig
 import os
+import sys
+from pathlib import Path
+from logging.config import fileConfig
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, pool
 
 from alembic import context
+
+backend_dir = Path(__file__).resolve().parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 from app.database import Base
 from app import models  # noqa: F401

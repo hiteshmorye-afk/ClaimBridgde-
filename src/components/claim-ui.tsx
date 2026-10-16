@@ -34,6 +34,8 @@ const statusStyles: Record<ClaimStatus, string> = {
   "Ready for Submission": "bg-success/12 text-success border-success/30",
   "Under Analysis": "bg-primary/10 text-primary border-primary/25",
   "Needs Review": "bg-warning/20 text-warning-foreground border-warning/40",
+  Approved: "bg-success/12 text-success border-success/30",
+  Rejected: "bg-destructive/10 text-destructive border-destructive/30",
 };
 
 export function StatusBadge({ status }: { status: ClaimStatus }) {

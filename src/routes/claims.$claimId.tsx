@@ -29,6 +29,10 @@ import {
 import { AppLayout } from "@/components/layout/AppLayout";
 import { formatDate, formatINR, convertApiClaimToClaim, Claim } from "@/lib/claims";
 import { fetchClaimById, ClaimApiData } from "@/api/claims";
+import {
+  requestClaimAmendment,
+  reviewClaimAmendment,
+} from "@/api/claims";
 import { PipelineStageBar } from "@/components/pipeline/PipelineStageBar";
 import { OcrViewer } from "@/components/pipeline/OcrViewer";
 import { MedicalIntelligence } from "@/components/pipeline/MedicalIntelligence";
@@ -36,6 +40,8 @@ import { PolicyRagPanel } from "@/components/pipeline/PolicyRagPanel";
 import { ReadinessGauge } from "@/components/pipeline/ReadinessGauge";
 import { HumanReviewTriage } from "@/components/pipeline/HumanReviewTriage";
 import { generateClaimPDFReport } from "@/api/integrations";
+import { getCurrentUser } from "@/api/auth";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/claims/$claimId")({
   head: () => ({
@@ -70,6 +76,11 @@ function ClaimDetailPage() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [activeTab, setActiveTab] = useState<TabType>("readiness");
   const [selectedDocIndex, setSelectedDocIndex] = useState(0);
+  const [amendmentChanges, setAmendmentChanges] = useState<Record<string, string>>({});
+  const [amendmentReason, setAmendmentReason] = useState("");
+  const [amendmentReviewNotes, setAmendmentReviewNotes] = useState<Record<string, string>>({});
+  const [savingAmendment, setSavingAmendment] = useState(false);
+  const currentUser = getCurrentUser();
 
   const loadClaim = () => {
     setLoading(true);
@@ -167,10 +178,82 @@ function ClaimDetailPage() {
     generateClaimPDFReport(claim.claimNumber || claim.id);
   };
 
-  const readinessBreakdown = claimData?.readinessBreakdown || (claim as any).readinessBreakdown;
+  const handleAmendmentRequest = async () => {
+    const changes: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(amendmentChanges)) {
+      if (value.trim()) changes[field] = field === "claimedAmount" ? Number(value) : value.trim();
+    }
+    if (!Object.keys(changes).length || !amendmentReason.trim()) {
+      toast.error("Select at least one permitted field and provide an amendment reason.");
+      return;
+    }
+    setSavingAmendment(true);
+    try {
+      await requestClaimAmendment(claim.id, changes, amendmentReason.trim());
+      setAmendmentChanges({});
+      setAmendmentReason("");
+      toast.success("Amendment request submitted for officer review.");
+      loadClaim();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to submit amendment request.");
+    } finally {
+      setSavingAmendment(false);
+    }
+  };
+
+  const handleAmendmentReview = async (
+    amendmentId: string,
+    decision: "Approve" | "Reject",
+  ) => {
+    const note = amendmentReviewNotes[amendmentId]?.trim();
+    if (!note) {
+      toast.error("A review reason is required.");
+      return;
+    }
+    setSavingAmendment(true);
+    try {
+      await reviewClaimAmendment(amendmentId, decision, note);
+      setAmendmentReviewNotes((current) => ({ ...current, [amendmentId]: "" }));
+      toast.success(
+        decision === "Approve" ? "Amendment approved." : "Amendment rejected.",
+      );
+      loadClaim();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to review amendment.");
+    } finally {
+      setSavingAmendment(false);
+    }
+  };
+
+  const readinessBreakdown = claimData?.readinessBreakdown;
   const fieldValidationTable = claimData?.fieldValidationTable || (claim as any).fieldValidationTable || [];
   const pipelineStages = claimData?.pipelineStages || (claim as any).pipelineStages || [];
   const historyRecords = claimData?.history || (claim as any).history || [];
+  const auditEvents = claimData?.auditEvents || [];
+  const amendments = claimData?.amendments || [];
+  const isClaimant = currentUser?.role === "claimant";
+  const isClaimsOfficer = currentUser?.role === "claims_officer";
+  const readinessComponents = readinessBreakdown
+    ? Object.entries(readinessBreakdown.components).map(([key, component]) => ({
+        key,
+        label: {
+          validation: "Validation",
+          medical: "Medical evidence",
+          policy: "Policy assessment",
+          ocr: "Document processing / OCR",
+        }[key] || key,
+        ...component,
+      }))
+    : [];
+  const readinessBlockers = readinessBreakdown?.blockers || [];
+  const readinessWarnings = readinessBreakdown?.warnings || [];
+  const amendableFields = [
+    { field: "patientName", label: "Patient name", type: "text" },
+    { field: "hospital", label: "Hospital", type: "text" },
+    { field: "admissionDate", label: "Admission date", type: "date" },
+    { field: "dischargeDate", label: "Discharge date", type: "date" },
+    { field: "claimedAmount", label: "Claimed amount", type: "number" },
+  ] as const;
   const documents = claim.documents || [];
   const selectedDoc = documents[selectedDocIndex] || documents[0];
 
@@ -371,76 +454,69 @@ function ClaimDetailPage() {
                 ocrScore={claim.ocrConfidence || 0}
               />
 
-              {/* Exact Component Weight Contribution Breakdown (35/25/25/15) */}
+              {/* Backend-provided readiness components and weights */}
               <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-4">
                 <div className="flex items-center justify-between border-b border-border pb-3">
                   <div>
                     <h3 className="text-sm font-bold text-foreground">Scoring Component Weight Contributions</h3>
                     <p className="text-xs text-muted-foreground">
-                      Authoritative ClaimBridge Readiness Aggregation Formula: Validation (35%), Medical (25%), Policy (25%), OCR (15%).
+                      Assessment from the recorded backend readiness calculation. Readiness does not guarantee approval.
                     </p>
                   </div>
                   <span className="font-mono text-xs font-bold text-primary">
-                    Total: {claim.readiness || 0}%
+                    Total: {readinessBreakdown?.readinessScore ?? claim.readiness ?? 0}%
                   </span>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  {[
-                    {
-                      label: "Validation Engine",
-                      weight: "35%",
-                      score: claim.validationReadiness || claim.readiness || 0,
-                      contrib: ((claim.validationReadiness || claim.readiness || 0) * 0.35).toFixed(2),
-                      color: "text-blue-500 bg-blue-500/10 border-blue-500/30",
-                    },
-                    {
-                      label: "Medical Intelligence",
-                      weight: "25%",
-                      score: claim.medicalConfidence || 0,
-                      contrib: ((claim.medicalConfidence || 0) * 0.25).toFixed(2),
-                      color: "text-purple-500 bg-purple-500/10 border-purple-500/30",
-                    },
-                    {
-                      label: "Policy Intelligence (RAG)",
-                      weight: "25%",
-                      score: claim.policyConfidence || 0,
-                      contrib: ((claim.policyConfidence || 0) * 0.25).toFixed(2),
-                      color: "text-amber-500 bg-amber-500/10 border-amber-500/30",
-                    },
-                    {
-                      label: "OCR & Document AI",
-                      weight: "15%",
-                      score: claim.ocrConfidence || 0,
-                      contrib: ((claim.ocrConfidence || 0) * 0.15).toFixed(2),
-                      color: "text-emerald-500 bg-emerald-500/10 border-emerald-500/30",
-                    },
-                  ].map((comp) => (
-                    <div key={comp.label} className="rounded-xl border border-border bg-secondary/50 p-4 space-y-2">
+                {readinessComponents.length ? (
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    {readinessComponents.map((component) => (
+                    <div key={component.key} className="rounded-xl border border-border bg-secondary/50 p-4 space-y-2">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-semibold text-foreground">{comp.label}</span>
-                        <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] border ${comp.color}`}>
-                          Weight {comp.weight}
+                        <span className="font-semibold text-foreground">{component.label}</span>
+                        <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] text-primary">
+                          Weight {component.weight}%
                         </span>
                       </div>
                       <div className="flex items-baseline justify-between font-mono">
-                        <span className="text-xl font-extrabold text-foreground">{comp.score}%</span>
-                        <span className="text-xs text-muted-foreground">+{comp.contrib}% pts</span>
+                        <span className="text-xl font-extrabold text-foreground">{component.score}%</span>
+                        <span className="text-xs text-muted-foreground">{component.contribution} pts</span>
                       </div>
                       <div className="h-1.5 w-full rounded-full bg-secondary overflow-hidden">
                         <div
                           className="h-full rounded-full bg-primary"
-                          style={{ width: `${Math.min(comp.score, 100)}%` }}
+                          style={{ width: `${Math.min(component.score, 100)}%` }}
                         />
                       </div>
                     </div>
                   ))}
-                </div>
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                    A component-level readiness explanation is not available for this claim.
+                  </p>
+                )}
 
                 {readinessBreakdown?.explanation && (
                   <p className="text-xs text-muted-foreground bg-secondary/40 p-3 rounded-xl border border-border">
                     {readinessBreakdown.explanation}
                   </p>
+                )}
+                {readinessBlockers.length > 0 && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+                    <strong>Blocking findings</strong>
+                    <ul className="mt-1 list-disc space-y-1 pl-4">
+                      {readinessBlockers.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {readinessWarnings.length > 0 && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                    <strong>Warnings</strong>
+                    <ul className="mt-1 list-disc space-y-1 pl-4">
+                      {readinessWarnings.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                    </ul>
+                  </div>
                 )}
               </div>
             </div>
@@ -610,6 +686,166 @@ function ClaimDetailPage() {
                   </table>
                 </div>
               )}
+
+              <section className="space-y-4 border-t border-border pt-5">
+                <div>
+                  <h3 className="text-sm font-bold text-foreground">Controlled Claim Amendments</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Corrections are preserved as requests and applied only after an authorized officer approves them.
+                  </p>
+                </div>
+
+                {amendments.length > 0 && (
+                  <div className="space-y-3">
+                    {amendments.map((amendment) => (
+                      <div key={amendment.id} className="rounded-xl border border-border bg-secondary/40 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-foreground">
+                            Amendment {amendment.status}
+                          </span>
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            {amendment.createdAt ? formatDate(amendment.createdAt) : "—"}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Reason: {amendment.reason || "Not provided"}
+                        </p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          {Object.entries(amendment.requestedChanges).map(([field, value]) => (
+                            <div key={field} className="rounded-lg border border-border p-3 text-xs">
+                              <p className="font-semibold text-foreground">{field}</p>
+                              <p className="mt-1 text-muted-foreground">
+                                Original: {String(amendment.originalValues[field] ?? "—")}
+                              </p>
+                              <p className="text-primary">Requested: {String(value)}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {amendment.reviewNote && (
+                          <p className="mt-3 text-xs text-muted-foreground">
+                            Officer note: {amendment.reviewNote}
+                          </p>
+                        )}
+                        {isClaimsOfficer && amendment.status === "Pending" && (
+                          <div className="mt-4 space-y-2">
+                            <label className="block text-xs font-semibold text-foreground">
+                              Required review reason
+                              <textarea
+                                value={amendmentReviewNotes[amendment.id] || ""}
+                                onChange={(event) =>
+                                  setAmendmentReviewNotes((current) => ({
+                                    ...current,
+                                    [amendment.id]: event.target.value,
+                                  }))
+                                }
+                                rows={2}
+                                className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-xs"
+                              />
+                            </label>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={savingAmendment}
+                                onClick={() => handleAmendmentReview(amendment.id, "Approve")}
+                                className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                              >
+                                Approve correction
+                              </button>
+                              <button
+                                type="button"
+                                disabled={savingAmendment}
+                                onClick={() => handleAmendmentReview(amendment.id, "Reject")}
+                                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                              >
+                                Reject correction
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {isClaimant &&
+                  !["Approved", "Rejected"].includes(claim.status) &&
+                  !amendments.some((amendment) => amendment.status === "Pending") && (
+                    <div className="space-y-3 rounded-xl border border-border bg-secondary/30 p-4">
+                      <p className="text-xs text-muted-foreground">
+                        Enter only fields that need correction. The original submission remains in the audit history.
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {amendableFields.map(({ field, label, type }) => (
+                          <label key={field} className="text-xs font-semibold text-foreground">
+                            {label}
+                            <input
+                              type={type}
+                              min={type === "number" ? "0.01" : undefined}
+                              step={type === "number" ? "0.01" : undefined}
+                              value={amendmentChanges[field] || ""}
+                              onChange={(event) =>
+                                setAmendmentChanges((current) => ({
+                                  ...current,
+                                  [field]: event.target.value,
+                                }))
+                              }
+                              className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      <label className="block text-xs font-semibold text-foreground">
+                        Reason for correction
+                        <textarea
+                          rows={3}
+                          value={amendmentReason}
+                          onChange={(event) => setAmendmentReason(event.target.value)}
+                          className="mt-1 w-full rounded-lg border border-border bg-background p-3 text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        disabled={savingAmendment}
+                        onClick={handleAmendmentRequest}
+                        className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                      >
+                        Submit amendment request
+                      </button>
+                    </div>
+                  )}
+              </section>
+
+              <section className="space-y-3 border-t border-border pt-5">
+                <div>
+                  <h3 className="text-sm font-bold text-foreground">Sensitive-Action Audit Events</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Persisted actions affecting account access, document processing, amendments, and review.
+                  </p>
+                </div>
+                {auditEvents.length === 0 ? (
+                  <p className="py-4 text-center text-xs text-muted-foreground">
+                    No sensitive-action events are recorded for this claim.
+                  </p>
+                ) : (
+                  <ol className="space-y-2">
+                    {auditEvents.map((event) => (
+                      <li key={event.id} className="rounded-lg border border-border bg-secondary/30 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-foreground">{event.eventType}</span>
+                          <time className="font-mono text-[10px] text-muted-foreground">
+                            {event.timestamp ? formatDate(event.timestamp) : "—"}
+                          </time>
+                        </div>
+                        {event.actorUserId && (
+                          <p className="mt-1 text-[10px] text-muted-foreground">
+                            Actor ID: {event.actorUserId}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </section>
             </div>
           )}
 

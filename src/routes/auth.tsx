@@ -21,7 +21,7 @@ function AuthPage() {
 
   const handleAuthenticated = () => {
     const user = getCurrentUser();
-    if (user?.portal === "Hospital") {
+    if (user?.role === "claimant") {
       navigate({ to: "/claims" });
     } else {
       navigate({ to: "/" });

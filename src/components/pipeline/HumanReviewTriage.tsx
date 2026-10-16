@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { Claim, formatINR } from "@/lib/claims";
 import { toast } from "sonner";
-import { updateClaimStatus, submitHospitalResponse } from "@/api/claims";
+import { updateClaimStatus, submitClaimantResponse } from "@/api/claims";
 import { getCurrentUser } from "@/api/auth";
 
 interface HumanReviewTriageProps {
@@ -29,28 +29,28 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
   const [rationale, setRationale] = useState("");
   const [policyRef, setPolicyRef] = useState("");
   const [escalationDest, setEscalationDest] = useState("Chief Medical Adjudicator");
+  const [requestedDocumentsText, setRequestedDocumentsText] = useState("");
   const [hospitalResponseNotes, setHospitalResponseNotes] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const currentUser = getCurrentUser();
-  const isHospitalCoordinator =
-    !currentUser ||
-    currentUser.portal === "Hospital" ||
-    currentUser.role === "Coordinator";
+  const isClaimant = currentUser?.role === "claimant";
+  const isClaimsOfficer = currentUser?.role === "claims_officer";
+  const isFinalDecision = claim.status === "Approved" || claim.status === "Rejected";
 
   // TPA Decision Actions
   const handleTpaAction = async (action: "Approve" | "Reject" | "RequestInfo" | "Escalate") => {
-    if (action === "Reject" && !rationale.trim()) {
-      toast.error("Rejection rationale is mandatory", {
-        description: "Please specify why the claim is being rejected (e.g. policy exclusion clause).",
-      });
+    if (!isClaimsOfficer || isFinalDecision) return;
+    if (!rationale.trim()) {
+      toast.error("A reason is required for every review action.");
       return;
     }
-
-    if (action === "RequestInfo" && !rationale.trim()) {
-      toast.error("Information request details required", {
-        description: "Please specify what documents or clarifications are needed from the hospital.",
-      });
+    const requestedDocuments = requestedDocumentsText
+      .split(/\r?\n|,/)
+      .map((document) => document.trim())
+      .filter(Boolean);
+    if (action === "RequestInfo" && requestedDocuments.length === 0) {
+      toast.error("List the additional documents or information required.");
       return;
     }
 
@@ -59,19 +59,21 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
       await updateClaimStatus(
         claim.id,
         action,
-        rationale.trim() || undefined,
+        rationale.trim(),
         action === "Escalate" ? escalationDest : undefined,
-        policyRef.trim() || undefined
+        policyRef.trim() || undefined,
+        action === "RequestInfo" ? requestedDocuments : undefined,
       );
 
       toast.success(`Claim ${claim.claimNumber || claim.id} updated: ${action}`, {
         description: rationale || `Adjudication decision executed by TPA Reviewer.`,
       });
-      setIsSubmitting(false);
       setRationale("");
+      setRequestedDocumentsText("");
       if (onStatusUpdated) onStatusUpdated();
     } catch (err: any) {
       toast.error(`Action failed: ${err?.message || "Failed to execute decision"}`);
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -87,15 +89,15 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
 
     setIsSubmitting(true);
     try {
-      await submitHospitalResponse(claim.id, hospitalResponseNotes.trim());
+      await submitClaimantResponse(claim.id, hospitalResponseNotes.trim());
       toast.success("Response submitted to TPA review queue", {
         description: "Status transitioned to Under Analysis with your response attached.",
       });
-      setIsSubmitting(false);
       setHospitalResponseNotes("");
       if (onStatusUpdated) onStatusUpdated();
     } catch (err: any) {
       toast.error(`Submission failed: ${err?.message || "Failed to submit response"}`);
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -109,7 +111,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
             <UserCheck className="size-5 text-amber-500" />
             <h3 className="text-lg font-bold text-foreground">Human Review Triage Desk</h3>
             <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-[10px] font-mono font-semibold text-primary">
-              {isHospitalCoordinator ? "Hospital Portal View" : "TPA Reviewer Portal"}
+              {isClaimant ? "Claimant Portal View" : isClaimsOfficer ? "Claims Officer Portal" : "Read-only"}
             </span>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -119,7 +121,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
 
         <div className="flex items-center gap-2">
           <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 font-mono text-xs font-semibold text-amber-500">
-            Route: {claim.routeDecision}
+            {claim.routeDecision ? `Route: ${claim.routeDecision}` : "Decision route not available"}
           </span>
           <span className="rounded-full border border-border bg-secondary px-3 py-1 font-mono text-xs text-foreground">
             Status: {claim.status}
@@ -244,13 +246,13 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
         {/* COLUMN 3: DECISION DESK (ROLE-BASED SEPARATION) */}
         <div className="flex flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm space-y-4">
           
-          {/* HOSPITAL COORDINATOR VIEW: READ-ONLY FINDINGS + RESPONSE FORM */}
-          {isHospitalCoordinator ? (
+          {/* CLAIMANT VIEW: READ-ONLY FINDINGS + RESPONSE FORM */}
+          {isClaimant ? (
             <div className="space-y-4 flex-1 flex flex-col justify-between">
               <div className="space-y-3">
                 <div className="flex items-center justify-between border-b border-border pb-3">
                   <span className="text-xs font-semibold uppercase tracking-wider text-primary">
-                    3. Hospital Coordinator Desk
+                    3. Claimant Response Desk
                   </span>
                   <Building2 className="size-4 text-primary" />
                 </div>
@@ -261,7 +263,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
                     <Lock className="size-3.5 text-muted-foreground" /> Adjudication Boundary
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Adjudication decisions (Approval, Rejection, Payment) are restricted to authorized TPA Reviewers. Hospital coordinators can submit clarifications or additional documents.
+                    Adjudication decisions are restricted to authorized claims officers. Claimants can submit clarifications and request controlled amendments.
                   </p>
                 </div>
 
@@ -280,7 +282,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
                 {/* Hospital Response Input */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-foreground">
-                    Hospital Coordinator Response / Document Notes
+                    Claimant Response / Document Notes
                   </label>
                   <textarea
                     rows={4}
@@ -302,7 +304,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
                 <Send className="size-4" /> Submit Response to TPA Desk
               </button>
             </div>
-          ) : (
+          ) : isClaimsOfficer ? (
             /* TPA REVIEWER VIEW: FULL ADJUDICATION DECISION CONTROLS */
             <div className="space-y-4 flex-1 flex flex-col justify-between">
               <div className="space-y-3">
@@ -316,14 +318,27 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
                 {/* Reviewer Rationale */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-foreground">
-                    Reviewer Notes / Decision Rationale <span className="text-rose-500">*</span>
+                    Mandatory reason for this action <span className="text-rose-500">*</span>
                   </label>
                   <textarea
                     rows={3}
                     value={rationale}
                     onChange={(e) => setRationale(e.target.value)}
-                    placeholder="Mandatory for Rejection or Request Info. Specify policy clauses, clinical protocol findings..."
+                    placeholder="Explain the action and cite relevant evidence or applicable policy clauses."
                     className="w-full rounded-xl border border-border bg-background p-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-primary transition"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-medium text-muted-foreground">
+                    Additional documents / information required (for requests)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={requestedDocumentsText}
+                    onChange={(e) => setRequestedDocumentsText(e.target.value)}
+                    placeholder="One item per line"
+                    className="w-full rounded-xl border border-border bg-background p-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-primary"
                   />
                 </div>
 
@@ -362,7 +377,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
               <div className="space-y-2 pt-2 border-t border-border">
                 <button
                   type="button"
-                  disabled={isSubmitting || claim.status === "Approved"}
+                  disabled={isSubmitting || isFinalDecision || !isClaimsOfficer}
                   onClick={() => handleTpaAction("Approve")}
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white hover:bg-emerald-500 transition shadow-md disabled:opacity-50"
                 >
@@ -372,7 +387,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isFinalDecision || !isClaimsOfficer}
                     onClick={() => handleTpaAction("RequestInfo")}
                     className="flex items-center justify-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 py-2 text-xs font-semibold text-amber-500 hover:bg-amber-500/20 transition"
                   >
@@ -381,7 +396,7 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
 
                   <button
                     type="button"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isFinalDecision || !isClaimsOfficer}
                     onClick={() => handleTpaAction("Escalate")}
                     className="flex items-center justify-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/10 py-2 text-xs font-semibold text-purple-400 hover:bg-purple-500/20 transition"
                   >
@@ -391,13 +406,17 @@ export function HumanReviewTriage({ claim, onStatusUpdated }: HumanReviewTriageP
 
                 <button
                   type="button"
-                  disabled={isSubmitting || claim.status === "Rejected"}
+                  disabled={isSubmitting || isFinalDecision || !isClaimsOfficer}
                   onClick={() => handleTpaAction("Reject")}
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 py-2 text-xs font-semibold text-rose-500 hover:bg-rose-500/20 transition disabled:opacity-50"
                 >
                   <XCircle className="size-4" /> Reject Claim (Rationale Required)
                 </button>
               </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-secondary/50 p-4 text-xs text-muted-foreground">
+              This account cannot submit claimant responses or record claims-officer decisions.
             </div>
           )}
 

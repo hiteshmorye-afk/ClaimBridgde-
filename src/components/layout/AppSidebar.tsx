@@ -17,6 +17,7 @@ import {
   Sparkles,
   Sun,
   Moon,
+  type LucideIcon,
 } from "lucide-react";
 import { logoutUser, getCurrentUser } from "@/api/auth";
 import { useTheme } from "@/hooks/useTheme";
@@ -28,10 +29,20 @@ interface AppSidebarProps {
   onLogout?: () => void;
 }
 
+interface NavigationItem {
+  label: string;
+  href: string;
+  icon: LucideIcon;
+  highlight?: boolean;
+  isAction?: boolean;
+  badge?: string;
+  placeholder?: boolean;
+}
+
 export function AppSidebar({
-  role = "Coordinator",
-  userName = "23102030",
-  userEmail = "23102030@apsit.edu.in",
+  role = "claimant",
+  userName = "Claimant",
+  userEmail = "claimant@example.com",
   onLogout,
 }: AppSidebarProps) {
   const routerState = useRouterState();
@@ -44,27 +55,24 @@ export function AppSidebar({
   }, []);
 
   const user = mounted ? getCurrentUser() : null;
-  const activeRole = user?.role || role || "Coordinator";
-  const activeName = user?.name || userName || "Coordinator";
-  const activeEmail = user?.email || userEmail || "coordinator@claimbridge.internal";
-  const isHospitalUser = mounted ? (user?.portal || "Hospital") === "Hospital" : true;
-
-  const allNav = [
-    { label: "New Claim", href: "/claims/new", icon: Plus, isAction: true },
-    { label: "Documents", href: "/documents", icon: FileText },
-    { label: "Document Analysis", href: "/ai-analysis", icon: BrainCircuit, badge: "AI Core" },
-    { label: "Claim Readiness", href: "/claims", icon: Zap, highlight: true },
-    { label: "Human Review", href: "/review", icon: UserCheck, badge: "Queue" },
-    { label: "TPA / Pre-Auth", href: "/tpa-integration", icon: Link2, placeholder: true, tpaOnly: true },
-    { label: "Reports", href: "/reports", icon: FileCheck },
-    { label: "Settings", href: "/settings", icon: Settings },
-  ];
-
-  const isReviewerOrAdmin = !isHospitalUser || activeRole.toLowerCase().includes("admin") || activeRole.toLowerCase().includes("tpa") || activeRole.toLowerCase().includes("reviewer");
-  const mainNav = allNav.filter((item) => {
-    if (item.tpaOnly && !isReviewerOrAdmin) return false;
-    return true;
-  });
+  const activeRole = user?.role || role;
+  const isClaimant = activeRole === "claimant";
+  const mainNav: NavigationItem[] = isClaimant
+    ? [
+        { label: "My Claims", href: "/claims", icon: Zap, highlight: true },
+        { label: "Add Claim", href: "/claims/new", icon: Plus, isAction: true },
+        { label: "Documents", href: "/documents", icon: FileText },
+        { label: "Settings", href: "/settings", icon: Settings },
+      ]
+    : [
+        { label: "Operations Dashboard", href: "/", icon: LayoutDashboard },
+        { label: "Review Queue", href: "/review", icon: UserCheck, badge: "Queue" },
+        { label: "Claims", href: "/claims", icon: FileSpreadsheet },
+        { label: "Documents", href: "/documents", icon: FileText },
+        { label: "Analytics", href: "/analytics", icon: BarChart3 },
+        { label: "Reports", href: "/reports", icon: FileCheck },
+        { label: "Settings", href: "/settings", icon: Settings },
+      ];
 
   const handleSignOut = () => {
     logoutUser();
@@ -80,7 +88,7 @@ export function AppSidebar({
       
       {/* BRAND LOCKUP */}
       <div className="flex h-16 items-center justify-between border-b border-border px-5">
-        <Link to={isHospitalUser ? "/claims" : "/"} className="flex items-center gap-2.5 group">
+        <Link to={isClaimant ? "/claims" : "/"} className="flex items-center gap-2.5 group">
           <div className="flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent shadow-md group-hover:scale-105 transition-transform">
             <ShieldCheck className="size-5 text-white" />
           </div>
