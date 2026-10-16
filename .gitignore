@@ -57,3 +57,10 @@ backend/test_tmp_artifacts/
 # Local databases and private uploads
 *.sqlite
 *.sqlite3
+
+# Local environment, OTP inbox, and non-source artifacts
+/.env
+/backend/dev_inbox.json
+/src_old_backup/
+/backend/scripts/ai_evaluation_report.json
+/backend/scripts/seed_demo_data.py
