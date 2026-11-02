@@ -117,7 +117,33 @@ export interface ClaimApiData {
   id: string;
   claimNumber: string;
   patientName: string;
+
   patientAge?: number | null;
+
+  claimType?: "reimbursement" | "cashless";
+
+  memberId?: string;
+
+  policyHolderName?: string;
+
+  relationship?: string;
+
+  gender?: string;
+
+  emergencyContactName?: string;
+
+  emergencyContactPhone?: string;
+
+  bloodGroup?: string;
+
+  preauthAmount?: number;
+
+  finalApprovedAmount?: number;
+
+  patientResponsibility?: number;
+
+  dischargeReadinessStatus?: string;
+
   hospital: string;
   policyNumber: string;
   insuranceProvider: string;
@@ -371,6 +397,81 @@ export async function reviewClaimAmendment(
   });
   if (response.error || !response.data) {
     throw new Error(response.error || "Unable to review the amendment.");
+  }
+  return response.data;
+}
+
+
+// =========================================================
+// CLAIM READINESS DASHBOARD INTERFACES & API CALL
+// =========================================================
+
+export interface ClaimReadinessDashboardSummary {
+  totalAssessed: number;
+  excellentClaims: number;
+  goodClaims: number;
+  needsAttentionClaims: number;
+  incompleteClaims: number;
+  averageScore: number;
+}
+
+export interface ClaimReadinessCategorySummary {
+  key: string;
+  name: string;
+  score: number;
+  weight: number;
+  status: string;
+}
+
+export interface ClaimReadinessDashboardItem {
+  claimId: string;
+  claimNumber: string;
+  patientName: string;
+  patientAge?: number | null;
+  hospital: string;
+  claimStage: string;
+  currentStage: string;
+  readinessScore: number;
+  readinessLevel: "Excellent Readiness" | "Good Readiness" | "Needs Attention" | "Incomplete";
+  readinessStatus: string;
+  isProvisional: boolean;
+  provisionalReasons: string[];
+  missingRequirements: string[];
+  recommendedActions: string[];
+  categorySummary: ClaimReadinessCategorySummary[];
+  totalDocuments: number;
+  claimStatus: string;
+  policyNumber: string;
+  insuranceProvider: string;
+  claimedAmount: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ClaimReadinessDashboardResponse {
+  summary: ClaimReadinessDashboardSummary;
+  claims: ClaimReadinessDashboardItem[];
+}
+
+export async function fetchClaimReadinessDashboard(params?: {
+  search?: string;
+  status?: string;
+  stage?: string;
+  level?: string;
+  sortBy?: "score_asc" | "score_desc" | "date_desc" | "patient_asc";
+}): Promise<ClaimReadinessDashboardResponse> {
+  const query = new URLSearchParams();
+  if (params?.search) query.append("search", params.search);
+  if (params?.status && params.status !== "all") query.append("status", params.status);
+  if (params?.stage && params.stage !== "all") query.append("stage", params.stage);
+  if (params?.level && params.level !== "all") query.append("level", params.level);
+  if (params?.sortBy) query.append("sortBy", params.sortBy);
+
+  const qs = query.toString();
+  const url = qs ? `/claims/readiness-dashboard?${qs}` : `/claims/readiness-dashboard`;
+  const response = await apiFetch<ClaimReadinessDashboardResponse>(url);
+  if (response.error || !response.data) {
+    throw new Error(response.error || "Unable to fetch claim readiness dashboard.");
   }
   return response.data;
 }

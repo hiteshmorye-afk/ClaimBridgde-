@@ -13,10 +13,13 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AiAnalysisRouteImport } from './routes/ai-analysis'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ClaimReadinessRouteImport } from './routes/claim-readiness'
 import { Route as DocumentsRouteImport } from './routes/documents'
+import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ReviewRouteImport } from './routes/review'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SupportRouteImport } from './routes/support'
 import { Route as TpaIntegrationRouteImport } from './routes/tpa-integration'
 import { Route as ClaimsIndexRouteImport } from './routes/claims.index'
 import { Route as ClaimsClaimIdRouteImport } from './routes/claims.$claimId'
@@ -43,9 +46,19 @@ const AuthRoute = AuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimReadinessRoute = ClaimReadinessRouteImport.update({
+  id: '/claim-readiness',
+  path: '/claim-readiness',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DocumentsRoute = DocumentsRouteImport.update({
   id: '/documents',
   path: '/documents',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -61,6 +74,11 @@ const ReviewRoute = ReviewRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SupportRoute = SupportRouteImport.update({
+  id: '/support',
+  path: '/support',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TpaIntegrationRoute = TpaIntegrationRouteImport.update({
@@ -94,10 +112,13 @@ export interface FileRoutesByFullPath {
   '/ai-analysis': typeof AiAnalysisRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/claim-readiness': typeof ClaimReadinessRoute
   '/documents': typeof DocumentsRoute
+  '/profile': typeof ProfileRoute
   '/reports': typeof ReportsRoute
   '/review': typeof ReviewRoute
   '/settings': typeof SettingsRoute
+  '/support': typeof SupportRoute
   '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
@@ -109,10 +130,13 @@ export interface FileRoutesByTo {
   '/ai-analysis': typeof AiAnalysisRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/claim-readiness': typeof ClaimReadinessRoute
   '/documents': typeof DocumentsRoute
+  '/profile': typeof ProfileRoute
   '/reports': typeof ReportsRoute
   '/review': typeof ReviewRoute
   '/settings': typeof SettingsRoute
+  '/support': typeof SupportRoute
   '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
@@ -125,10 +149,13 @@ export interface FileRoutesById {
   '/ai-analysis': typeof AiAnalysisRoute
   '/analytics': typeof AnalyticsRoute
   '/auth': typeof AuthRoute
+  '/claim-readiness': typeof ClaimReadinessRoute
   '/documents': typeof DocumentsRoute
+  '/profile': typeof ProfileRoute
   '/reports': typeof ReportsRoute
   '/review': typeof ReviewRoute
   '/settings': typeof SettingsRoute
+  '/support': typeof SupportRoute
   '/tpa-integration': typeof TpaIntegrationRoute
   '/claims/$claimId': typeof ClaimsClaimIdRoute
   '/claims/new': typeof ClaimsNewRoute
@@ -142,10 +169,13 @@ export interface FileRouteTypes {
     | '/ai-analysis'
     | '/analytics'
     | '/auth'
+    | '/claim-readiness'
     | '/documents'
+    | '/profile'
     | '/reports'
     | '/review'
     | '/settings'
+    | '/support'
     | '/tpa-integration'
     | '/claims/$claimId'
     | '/claims/new'
@@ -157,10 +187,13 @@ export interface FileRouteTypes {
     | '/ai-analysis'
     | '/analytics'
     | '/auth'
+    | '/claim-readiness'
     | '/documents'
+    | '/profile'
     | '/reports'
     | '/review'
     | '/settings'
+    | '/support'
     | '/tpa-integration'
     | '/claims/$claimId'
     | '/claims/new'
@@ -172,10 +205,13 @@ export interface FileRouteTypes {
     | '/ai-analysis'
     | '/analytics'
     | '/auth'
+    | '/claim-readiness'
     | '/documents'
+    | '/profile'
     | '/reports'
     | '/review'
     | '/settings'
+    | '/support'
     | '/tpa-integration'
     | '/claims/$claimId'
     | '/claims/new'
@@ -188,10 +224,13 @@ export interface RootRouteChildren {
   AiAnalysisRoute: typeof AiAnalysisRoute
   AnalyticsRoute: typeof AnalyticsRoute
   AuthRoute: typeof AuthRoute
+  ClaimReadinessRoute: typeof ClaimReadinessRoute
   DocumentsRoute: typeof DocumentsRoute
+  ProfileRoute: typeof ProfileRoute
   ReportsRoute: typeof ReportsRoute
   ReviewRoute: typeof ReviewRoute
   SettingsRoute: typeof SettingsRoute
+  SupportRoute: typeof SupportRoute
   TpaIntegrationRoute: typeof TpaIntegrationRoute
   ClaimsClaimIdRoute: typeof ClaimsClaimIdRoute
   ClaimsNewRoute: typeof ClaimsNewRoute
@@ -229,11 +268,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claim-readiness': {
+      id: '/claim-readiness'
+      path: '/claim-readiness'
+      fullPath: '/claim-readiness'
+      preLoaderRoute: typeof ClaimReadinessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/documents': {
       id: '/documents'
       path: '/documents'
       fullPath: '/documents'
       preLoaderRoute: typeof DocumentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -255,6 +308,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/support': {
+      id: '/support'
+      path: '/support'
+      fullPath: '/support'
+      preLoaderRoute: typeof SupportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tpa-integration': {
@@ -300,10 +360,13 @@ const rootRouteChildren: RootRouteChildren = {
   AiAnalysisRoute: AiAnalysisRoute,
   AnalyticsRoute: AnalyticsRoute,
   AuthRoute: AuthRoute,
+  ClaimReadinessRoute: ClaimReadinessRoute,
   DocumentsRoute: DocumentsRoute,
+  ProfileRoute: ProfileRoute,
   ReportsRoute: ReportsRoute,
   ReviewRoute: ReviewRoute,
   SettingsRoute: SettingsRoute,
+  SupportRoute: SupportRoute,
   TpaIntegrationRoute: TpaIntegrationRoute,
   ClaimsClaimIdRoute: ClaimsClaimIdRoute,
   ClaimsNewRoute: ClaimsNewRoute,

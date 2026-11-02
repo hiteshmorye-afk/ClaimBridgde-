@@ -12,6 +12,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .auth import (
+    canonical_role_name,
     require_claimant,
     require_claims_officer,
     require_document_reader,
@@ -25,12 +26,15 @@ from .models import (
     ClaimDocument,
     ClaimHistory,
     DocumentExtraction,
+    InsuranceProvider,
     MedicalAnalysis,
     Patient,
     Policy,
     User,
     VerificationResult,
+    PatientConsent,
 )
+from .claim_readiness_engine import calculate_explainable_claim_readiness
 
 router = APIRouter(
     prefix="/claims",
@@ -60,6 +64,16 @@ class CreateClaimRequest(BaseModel):
     dischargeDate: Optional[str] = None
 
     claimedAmount: float = 0.0
+
+    # Cashless extensions
+    claimType: Optional[str] = "reimbursement"
+    memberId: Optional[str] = None
+    policyHolderName: Optional[str] = None
+    relationship: Optional[str] = None
+    tpaName: Optional[str] = None
+    emergencyContactName: Optional[str] = None
+    emergencyContactPhone: Optional[str] = None
+    bloodGroup: Optional[str] = None
 
 
 class UpdateClaimStatusRequest(BaseModel):
@@ -112,32 +126,66 @@ def generate_claim_number() -> str:
     return f"CLM-{date.today().year}-{uuid.uuid4().hex[:6].upper()}"
 
 
-def check_claim_access(claim: Claim, policy: Policy, user: Optional[User]) -> bool:
+def check_claim_access(claim: Claim, policy: Optional[Policy], user: Optional[User]) -> bool:
     """
-    Verify organization-scoped access:
-    - Claimant: can only access claims they submitted
-    - Claims officer: can only access claims for their authorized TPA organization
-    - Unauthenticated: allowed only when no user context is active (handled by route dependency)
+    Verify organization-scoped access while respecting the distinction between:
+    - an admin (system-wide access)
+    - a claimant (owner-only access)
+    - a hospital coordinator (owner or hospital-wide access)
+    - a claims officer / TPA reviewer (exact insurer scope)
     """
     if not user:
         return False
 
-    if user.role == "claimant":
-        return claim.created_by == user.id
+    normalized_role = canonical_role_name(user.role)
+    raw_role = (user.role or "").strip().lower()
+    is_hospital_coordinator = raw_role in {"hospital_coordinator", "coordinator", "hospital coordinator"}
 
-    if user.role == "claims_officer":
+    if normalized_role == "admin":
+        if getattr(user, "account_status", None) == "active" and getattr(user, "organization_verified_at", None):
+            return True
+        return False
+
+    if normalized_role == "claimant":
+        if claim.created_by == user.id:
+            return True
+        if is_hospital_coordinator and (user.organization or "").strip() and (claim.hospital_name or "").strip():
+            return user.organization.strip().casefold() in claim.hospital_name.strip().casefold()
+        return False
+
+    if normalized_role in ("claim_officer", "claims_officer", "tpa_reviewer"):
         user_org = (user.organization or "").strip().casefold()
-        insurer = (policy.insurance_provider or "").strip().casefold()
+        insurer = ((policy.insurance_provider if policy else getattr(claim, "insurance_provider", None)) or "").strip().casefold()
         return bool(user_org and insurer and user_org == insurer)
 
     return False
 
 
 def apply_claim_scope(query, user: User):
-    """Apply the authenticated user's exact ownership or TPA organization boundary."""
-    if user.role == "claimant":
+    """Apply the authenticated user's exact ownership, hospital, or TPA organization boundary."""
+    normalized_role = canonical_role_name(user.role)
+    raw_role = (user.role or "").strip().lower()
+    is_hospital_coordinator = raw_role in {"hospital_coordinator", "coordinator", "hospital coordinator"}
+
+    if normalized_role == "admin":
+        if getattr(user, "account_status", None) == "active" and getattr(user, "organization_verified_at", None):
+            return query
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has no authorized claim organization.",
+        )
+
+    if normalized_role == "claimant":
+        if is_hospital_coordinator and (user.organization or "").strip():
+            return query.filter(
+                or_(
+                    Claim.created_by == user.id,
+                    Claim.hospital_name.ilike(f"%{user.organization.strip()}%"),
+                )
+            )
         return query.filter(Claim.created_by == user.id)
-    if user.role == "claims_officer" and (user.organization or "").strip():
+
+    if normalized_role in ("claim_officer", "claims_officer", "tpa_reviewer") and (user.organization or "").strip():
         return query.filter(
             func.lower(func.trim(Policy.insurance_provider))
             == (user.organization or "").strip().lower()
@@ -241,6 +289,18 @@ def serialize_claim(
             "routeReasons": [],
             "createdAt": claim.created_at.isoformat() if claim.created_at else None,
             "updatedAt": claim.updated_at.isoformat() if claim.updated_at else None,
+            "claimType": getattr(claim, "claim_type", "reimbursement") or "reimbursement",
+            "preauthAmount": float(claim.preauth_amount) if getattr(claim, "preauth_amount", None) is not None else None,
+            "finalApprovedAmount": float(claim.final_approved_amount) if getattr(claim, "final_approved_amount", None) is not None else None,
+            "patientResponsibility": float(claim.patient_responsibility) if getattr(claim, "patient_responsibility", None) is not None else None,
+            "dischargeReadinessStatus": getattr(claim, "discharge_readiness_status", "Pending Pre-Auth") or "Pending Pre-Auth",
+            "memberId": getattr(policy, "member_id", None),
+            "policyHolderName": getattr(policy, "policy_holder_name", None),
+            "relationship": getattr(policy, "relationship", None),
+            "tpaName": getattr(policy, "tpa_name", None),
+            "emergencyContactName": getattr(patient, "emergency_contact_name", None),
+            "emergencyContactPhone": getattr(patient, "emergency_contact_phone", None),
+            "bloodGroup": getattr(patient, "blood_group", None),
             "documents": [],
             "pipelineStages": [],
             "fieldValidationTable": [],
@@ -638,36 +698,75 @@ def serialize_claim(
                 "timestamp": event.created_at.isoformat() if event.created_at else None,
             })
 
-    # Claim Readiness Breakdown (Weights: Validation 35%, Medical 25%, Policy 25%, OCR 15%)
-    val_contrib = round(validation_readiness * 0.35, 2)
-    med_contrib = round(medical_confidence * 0.25, 2)
-    pol_contrib = round(policy_confidence * 0.25, 2)
-    ocr_contrib = round(ocr_confidence * 0.15, 2)
+    # Calculate holistic 7-category Explainable Claim Readiness
+    claim_stage = getattr(claim, "claim_type", "preauth") or "preauth"
+    curr_stg = str(getattr(claim, "current_stage", "")).lower()
+    if "final" in curr_stg or "discharge" in curr_stg:
+        claim_stage = "final_auth"
+
+    consents = db.query(PatientConsent).filter(PatientConsent.claim_id == claim.id).all() if db else []
+
+    explainable_readiness = calculate_explainable_claim_readiness(
+        claim=claim,
+        patient=patient,
+        policy=policy,
+        documents=documents,
+        extractions=doc_extractions_map,
+        medical_analysis=medical_analysis,
+        verification_result=verification,
+        consents=consents,
+        stage=claim_stage,
+    )
+
+    claim_readiness_val = explainable_readiness["readiness_score"]
+    readiness_calculated = True
+
+    try:
+        claim.readiness_score = Decimal(str(claim_readiness_val))
+    except Exception:
+        pass
+
+    cat_components = {}
+    for cat in explainable_readiness.get("category_list", []):
+        cat_components[cat["key"]] = {
+            "name": cat["name"],
+            "label": cat["name"],
+            "score": cat["score"],
+            "weight": cat["weight"],
+            "contribution": cat["score"],
+            "status": cat["status"],
+            "checks": cat["checks"],
+            "deductions": cat["deductions"],
+            "recommendedActions": cat["recommended_actions"],
+        }
 
     readiness_breakdown = {
         "readinessScore": claim_readiness_val,
-        "readinessStatus": (
-            "Ready for Next Stage"
-            if claim_readiness_val >= 80 and not mismatches
-            else ("Needs Human Review" if (mismatches or claim_readiness_val > 0) else "Not Ready")
-        ),
+        "readinessLevel": explainable_readiness["readiness_level"],
+        "readinessStatus": explainable_readiness["readiness_status"],
+        "isProvisional": explainable_readiness["is_provisional"],
+        "provisionalReasons": explainable_readiness["provisional_reasons"],
+        "stage": explainable_readiness["stage"],
+        "categories": explainable_readiness["categories"],
+        "categoryList": explainable_readiness["category_list"],
+        "missingRequirements": explainable_readiness["missing_requirements"],
+        "recommendedActions": explainable_readiness["recommended_actions"],
+        "disclaimer": explainable_readiness["disclaimer"],
         "weights": {
-            "validation": 0.35,
-            "medical": 0.25,
-            "policy": 0.25,
-            "ocr": 0.15,
+            "patient_identity": 15,
+            "policy_information": 20,
+            "medical_diagnosis": 20,
+            "required_documents": 20,
+            "document_quality": 10,
+            "cross_document_consistency": 10,
+            "consent_authorization": 5,
         },
-        "components": {
-            "validation": {"score": validation_readiness, "weight": 0.35, "contribution": val_contrib},
-            "medical": {"score": medical_confidence, "weight": 0.25, "contribution": med_contrib},
-            "policy": {"score": policy_confidence, "weight": 0.25, "contribution": pol_contrib},
-            "ocr": {"score": ocr_confidence, "weight": 0.15, "contribution": ocr_contrib},
-        },
+        "components": cat_components,
         "warnings": mismatches + risk_indicators,
-        "blockers": missing_docs,
+        "blockers": explainable_readiness["missing_requirements"] or missing_docs,
         "explanation": (
-            f"Readiness calculated at {claim_readiness_val:.2f}% using weighted aggregation. "
-            f"Validation ({val_contrib}%), Medical ({med_contrib}%), Policy ({pol_contrib}%), OCR ({ocr_contrib}%)."
+            f"Readiness assessed at {claim_readiness_val:.1f}% ({explainable_readiness['readiness_level']}) "
+            f"across 7 deterministic categories for {claim_stage.replace('_', ' ').title()} stage."
         ),
     }
 
@@ -715,6 +814,18 @@ def serialize_claim(
         "routeReasons": route_reasons,
         "createdAt": claim.created_at.isoformat() if claim.created_at else None,
         "updatedAt": claim.updated_at.isoformat() if claim.updated_at else None,
+        "claimType": getattr(claim, "claim_type", "reimbursement") or "reimbursement",
+        "preauthAmount": float(claim.preauth_amount) if getattr(claim, "preauth_amount", None) is not None else None,
+        "finalApprovedAmount": float(claim.final_approved_amount) if getattr(claim, "final_approved_amount", None) is not None else None,
+        "patientResponsibility": float(claim.patient_responsibility) if getattr(claim, "patient_responsibility", None) is not None else None,
+        "dischargeReadinessStatus": getattr(claim, "discharge_readiness_status", "Pending Pre-Auth") or "Pending Pre-Auth",
+        "memberId": getattr(policy, "member_id", None),
+        "policyHolderName": getattr(policy, "policy_holder_name", None),
+        "relationship": getattr(policy, "relationship", None),
+        "tpaName": getattr(policy, "tpa_name", None),
+        "emergencyContactName": getattr(patient, "emergency_contact_name", None),
+        "emergencyContactPhone": getattr(patient, "emergency_contact_phone", None),
+        "bloodGroup": getattr(patient, "blood_group", None),
 
         # Detail sections for Claim Readiness Dashboard
         "documents": serialized_docs,
@@ -737,6 +848,7 @@ def serialize_claim(
             "relevantExclusions": relevant_exclusions,
         },
         "readinessBreakdown": readiness_breakdown,
+        "claimReadiness": explainable_readiness,
         "confidenceDetails": confidence_details,
         "history": claim_history_records,
         "auditEvents": audit_event_records,
@@ -789,7 +901,7 @@ def get_claims_summary(
     Scoped to claimant ownership or the officer's exact TPA organization.
     """
     query = db.query(Claim)
-    if user.role == "claims_officer":
+    if canonical_role_name(user.role) == "claims_officer":
         query = query.join(Policy, Claim.policy_id == Policy.id)
     query = apply_claim_scope(query, user)
 
@@ -946,6 +1058,251 @@ def get_claims_analytics(
     }
 
 
+
+# =========================================================
+# GET CLAIM READINESS DASHBOARD (ALL ACCESSIBLE CLAIMS)
+# =========================================================
+
+@router.get("/readiness-dashboard")
+def get_claim_readiness_dashboard(
+    search: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    stage_filter: Optional[str] = Query(None, alias="stage"),
+    level_filter: Optional[str] = Query(None, alias="level"),
+    sort_by: Optional[str] = Query("score_asc", alias="sortBy"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_document_reader),
+):
+    """
+    Return comprehensive, live claim readiness assessment dashboard
+    for all claims accessible to the authenticated user.
+    Evaluates 7-category readiness deterministically using live evidence.
+    Sorts lowest readiness score first by default.
+    """
+    query = (
+        db.query(Claim, Patient, Policy)
+        .join(Patient, Claim.patient_id == Patient.id)
+        .join(Policy, Claim.policy_id == Policy.id)
+    )
+
+    query = apply_claim_scope(query, user)
+
+    # Status filter
+    if status_filter and status_filter.lower() != "all":
+        query = query.filter(Claim.claim_status == status_filter)
+
+    # Stage filter
+    if stage_filter and stage_filter.lower() != "all":
+        stage_val = stage_filter.lower()
+        if "pre" in stage_val:
+            query = query.filter(
+                or_(
+                    Claim.claim_type == "preauth",
+                    Claim.claim_type == "cashless",
+                    Claim.current_stage.ilike("%preauth%"),
+                    Claim.current_stage.ilike("%pre-auth%"),
+                )
+            )
+        elif "final" in stage_val or "discharge" in stage_val:
+            query = query.filter(
+                or_(
+                    Claim.current_stage.ilike("%final%"),
+                    Claim.current_stage.ilike("%discharge%"),
+                )
+            )
+        elif "reimburse" in stage_val:
+            query = query.filter(Claim.claim_type == "reimbursement")
+
+    # Search filter
+    if search:
+        search_pattern = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Claim.claim_number.ilike(search_pattern),
+                Patient.full_name.ilike(search_pattern),
+                Policy.policy_number.ilike(search_pattern),
+                Claim.hospital_name.ilike(search_pattern),
+            )
+        )
+
+    rows = query.order_by(Claim.created_at.desc()).all()
+
+    if not rows:
+        return {
+            "summary": {
+                "totalAssessed": 0,
+                "excellentClaims": 0,
+                "goodClaims": 0,
+                "needsAttentionClaims": 0,
+                "incompleteClaims": 0,
+                "averageScore": 0.0,
+            },
+            "claims": [],
+        }
+
+    claim_ids = [c.id for c, _p, _pol in rows]
+
+    # Batch query related entities to prevent N+1 query explosion
+    all_docs = db.query(ClaimDocument).filter(ClaimDocument.claim_id.in_(claim_ids)).all()
+    docs_by_claim: Dict[Any, List[ClaimDocument]] = {}
+    for d in all_docs:
+        docs_by_claim.setdefault(d.claim_id, []).append(d)
+
+    all_doc_ids = [d.id for d in all_docs]
+    extractions_by_doc_id: Dict[str, DocumentExtraction] = {}
+    if all_doc_ids:
+        all_extractions = db.query(DocumentExtraction).filter(DocumentExtraction.document_id.in_(all_doc_ids)).all()
+        for ext in all_extractions:
+            extractions_by_doc_id[str(ext.document_id)] = ext
+
+    all_meds = db.query(MedicalAnalysis).filter(MedicalAnalysis.claim_id.in_(claim_ids)).order_by(MedicalAnalysis.created_at.desc()).all()
+    meds_by_claim: Dict[Any, MedicalAnalysis] = {}
+    for m in all_meds:
+        if m.claim_id not in meds_by_claim:
+            meds_by_claim[m.claim_id] = m
+
+    all_verifs = db.query(VerificationResult).filter(VerificationResult.claim_id.in_(claim_ids)).order_by(VerificationResult.created_at.desc()).all()
+    verifs_by_claim: Dict[Any, VerificationResult] = {}
+    for v in all_verifs:
+        if v.claim_id not in verifs_by_claim:
+            verifs_by_claim[v.claim_id] = v
+
+    all_consents = db.query(PatientConsent).filter(PatientConsent.claim_id.in_(claim_ids)).all()
+    consents_by_claim: Dict[Any, List[PatientConsent]] = {}
+    for con in all_consents:
+        consents_by_claim.setdefault(con.claim_id, []).append(con)
+
+    claims_list: List[Dict[str, Any]] = []
+    total_assessed = 0
+    count_excellent = 0
+    count_good = 0
+    count_needs_attention = 0
+    count_incomplete = 0
+    total_score_sum = 0.0
+
+    for claim, patient, policy in rows:
+        claim_stage = getattr(claim, "claim_type", "preauth") or "preauth"
+        curr_stg = str(getattr(claim, "current_stage", "")).lower()
+        if "final" in curr_stg or "discharge" in curr_stg:
+            claim_stage = "final_auth"
+        elif "reimburse" in str(claim.claim_type or "").lower():
+            claim_stage = "reimbursement"
+
+        docs = docs_by_claim.get(claim.id, [])
+        doc_ext_map = {str(d.id): extractions_by_doc_id[str(d.id)] for d in docs if str(d.id) in extractions_by_doc_id}
+        med = meds_by_claim.get(claim.id)
+        verif = verifs_by_claim.get(claim.id)
+        consents = consents_by_claim.get(claim.id, [])
+
+        eval_result = calculate_explainable_claim_readiness(
+            claim=claim,
+            patient=patient,
+            policy=policy,
+            documents=docs,
+            extractions=doc_ext_map,
+            medical_analysis=med,
+            verification_result=verif,
+            consents=consents,
+            stage=claim_stage,
+        )
+
+        score = float(eval_result["readiness_score"])
+        level = eval_result["readiness_level"]
+        is_prov = eval_result["is_provisional"]
+        prov_reasons = eval_result["provisional_reasons"]
+
+        # Keep claim model score synchronized
+        try:
+            claim.readiness_score = Decimal(str(score))
+        except Exception:
+            pass
+
+        # Filter by readiness level if requested
+        if level_filter and level_filter.lower() != "all":
+            if level.lower() != level_filter.lower():
+                continue
+
+        total_assessed += 1
+        total_score_sum += score
+        if score >= 90.0:
+            count_excellent += 1
+        elif score >= 75.0:
+            count_good += 1
+        elif score >= 50.0:
+            count_needs_attention += 1
+        else:
+            count_incomplete += 1
+
+        cat_summary = [
+            {
+                "key": c["key"],
+                "name": c["name"],
+                "score": c["score"],
+                "weight": c["weight"],
+                "status": c["status"],
+            }
+            for c in eval_result.get("category_list", [])
+        ]
+
+        patient_age = None
+        if patient.date_of_birth:
+            patient_age = max(0, date.today().year - patient.date_of_birth.year)
+
+        claims_list.append({
+            "claimId": str(claim.id),
+            "claimNumber": claim.claim_number,
+            "patientName": patient.full_name,
+            "patientAge": patient_age,
+            "hospital": claim.hospital_name or "—",
+            "claimStage": claim_stage,
+            "currentStage": claim.current_stage or "Pre-Auth Requested",
+            "readinessScore": round(score, 1),
+            "readinessLevel": level,
+            "readinessStatus": eval_result.get("readiness_status", "Needs Attention"),
+            "isProvisional": is_prov,
+            "provisionalReasons": prov_reasons,
+            "missingRequirements": eval_result.get("missing_requirements", []),
+            "recommendedActions": eval_result.get("recommended_actions", []),
+            "categorySummary": cat_summary,
+            "totalDocuments": len(docs),
+            "claimStatus": claim.claim_status,
+            "policyNumber": policy.policy_number,
+            "insuranceProvider": policy.insurance_provider,
+            "claimedAmount": float(claim.claimed_amount or 0),
+            "createdAt": claim.created_at.isoformat() if claim.created_at else None,
+            "updatedAt": claim.updated_at.isoformat() if claim.updated_at else None,
+        })
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Default sort by readiness score, lowest first by default
+    if sort_by == "score_desc":
+        claims_list.sort(key=lambda x: x["readinessScore"], reverse=True)
+    elif sort_by == "date_desc":
+        claims_list.sort(key=lambda x: x["createdAt"] or "", reverse=True)
+    elif sort_by == "patient_asc":
+        claims_list.sort(key=lambda x: x["patientName"].lower())
+    else:  # score_asc (default)
+        claims_list.sort(key=lambda x: x["readinessScore"])
+
+    avg_score = round(total_score_sum / total_assessed, 1) if total_assessed > 0 else 0.0
+
+    return {
+        "summary": {
+            "totalAssessed": total_assessed,
+            "excellentClaims": count_excellent,
+            "goodClaims": count_good,
+            "needsAttentionClaims": count_needs_attention,
+            "incompleteClaims": count_incomplete,
+            "averageScore": avg_score,
+        },
+        "claims": claims_list,
+    }
+
+
 # =========================================================
 # GET ALL CLAIMS (SCOPED BY ORGANIZATION)
 # =========================================================
@@ -1048,7 +1405,7 @@ def get_claim(
     if not check_claim_access(claim, policy, user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This claim is outside your authorized organization.",
+            detail="Access Denied: This claim is outside your authorized organization.",
         )
 
     documents = db.query(ClaimDocument).filter(ClaimDocument.claim_id == claim.id).all()
@@ -1124,13 +1481,21 @@ def create_claim(
         if claimed_val > 100_000_000:
             raise HTTPException(status_code=422, detail="Claimed amount exceeds the permissible limit.")
 
-        # 7. Dates
-        if not claim_data.admissionDate or not claim_data.dischargeDate:
-            raise HTTPException(status_code=422, detail="Both admission date and discharge date are required.")
+        # 7. Dates (Initial Pre-Auth requires only admissionDate; dischargeDate is optional)
+        claim_type_val = (claim_data.claimType or "reimbursement").strip().lower()
+        is_preauth_cashless = (claim_type_val == "cashless")
+
+        if not claim_data.admissionDate:
+            raise HTTPException(status_code=422, detail="Admission date is required.")
         adm_date = parse_date(claim_data.admissionDate)
-        dis_date = parse_date(claim_data.dischargeDate)
-        if adm_date > dis_date:
-            raise HTTPException(status_code=422, detail="Admission date cannot be after discharge date.")
+
+        dis_date = None
+        if claim_data.dischargeDate and str(claim_data.dischargeDate).strip():
+            dis_date = parse_date(claim_data.dischargeDate)
+            if adm_date > dis_date:
+                raise HTTPException(status_code=422, detail="Admission date cannot be after discharge date.")
+        elif not is_preauth_cashless:
+            raise HTTPException(status_code=422, detail="Both admission date and discharge date are required.")
 
         # 8. Diagnosis
         diag_text = (claim_data.diagnosis or "").strip()
@@ -1141,22 +1506,68 @@ def create_claim(
         dob = date(date.today().year - claim_data.patientAge, 1, 1) if claim_data.patientAge > 0 else None
         patient = db.query(Patient).filter(Patient.full_name == patient_name).first()
         if not patient:
-            patient = Patient(full_name=patient_name, date_of_birth=dob)
+            patient = Patient(
+                full_name=patient_name,
+                date_of_birth=dob,
+                emergency_contact_name=claim_data.emergencyContactName,
+                emergency_contact_phone=claim_data.emergencyContactPhone,
+                blood_group=claim_data.bloodGroup,
+            )
             db.add(patient)
             db.flush()
-        elif dob and not patient.date_of_birth:
-            patient.date_of_birth = dob
+        else:
+            if dob and not patient.date_of_birth:
+                patient.date_of_birth = dob
+            if claim_data.emergencyContactName:
+                patient.emergency_contact_name = claim_data.emergencyContactName
+            if claim_data.emergencyContactPhone:
+                patient.emergency_contact_phone = claim_data.emergencyContactPhone
+            if claim_data.bloodGroup:
+                patient.blood_group = claim_data.bloodGroup
             db.flush()
 
-        # Find or create Policy
+        # Find or create Policy and bind to the selected provider registry entry when available.
         policy = db.query(Policy).filter(Policy.policy_number == policy_num).first()
+        provider_record = db.query(InsuranceProvider).filter(
+            func.lower(func.trim(InsuranceProvider.name)) == provider_name.casefold()
+        ).first()
+        if not provider_record:
+            provider_record = db.query(InsuranceProvider).filter(
+                func.lower(func.trim(InsuranceProvider.code)) == provider_name.casefold()
+            ).first()
+
         if not policy:
-            policy = Policy(policy_number=policy_num, insurance_provider=provider_name)
+            policy = Policy(
+                policy_number=policy_num,
+                insurance_provider=provider_name,
+                provider_id=provider_record.id if provider_record else None,
+                member_id=claim_data.memberId,
+                policy_holder_name=claim_data.policyHolderName,
+                relationship=claim_data.relationship,
+                tpa_name=claim_data.tpaName,
+            )
             db.add(policy)
             db.flush()
+        else:
+            policy.insurance_provider = provider_name
+            if provider_record:
+                policy.provider_id = provider_record.id
+            if claim_data.memberId:
+                policy.member_id = claim_data.memberId
+            if claim_data.policyHolderName:
+                policy.policy_holder_name = claim_data.policyHolderName
+            if claim_data.relationship:
+                policy.relationship = claim_data.relationship
+            if claim_data.tpaName:
+                policy.tpa_name = claim_data.tpaName
+            db.flush()
+
         claim_num = generate_claim_number()
 
-        # Create Claim with hospital_name
+        # Create Claim with hospital_name and cashless type
+        claim_type_val = claim_data.claimType or "reimbursement"
+        discharge_status_val = "Pending Pre-Auth" if claim_type_val == "cashless" else "Not Applicable"
+
         claim_kwargs = {
             "claim_number": claim_num,
             "patient_id": patient.id,
@@ -1169,6 +1580,8 @@ def create_claim(
             "current_stage": "01 Secure Document Intake",
             "readiness_score": Decimal("0"),
             "created_by": user.id,
+            "claim_type": claim_type_val,
+            "discharge_readiness_status": discharge_status_val,
         }
         claim = Claim(**claim_kwargs)
         db.add(claim)
@@ -1420,7 +1833,7 @@ def update_claim_status(
     if not status_data.note or not status_data.note.strip():
         raise HTTPException(
             status_code=400,
-            detail="A decision reason is required for every review action.",
+            detail="A decision reason is mandatory for every review action.",
         )
     if claim.claim_status in {"Approved", "Rejected"}:
         raise HTTPException(
@@ -1440,11 +1853,8 @@ def update_claim_status(
             status_code=409,
             detail="Review the pending claimant amendment before recording a final decision.",
         )
-    if action == "RequestInfo" and not status_data.requestedDocuments:
-        raise HTTPException(
-            status_code=422,
-            detail="Specify the additional evidence or information required.",
-        )
+    if action == "RequestInfo" and status_data.requestedDocuments is not None and not status_data.requestedDocuments:
+        status_data.requestedDocuments = []
     if action == "Escalate" and not (status_data.destination or "").strip():
         raise HTTPException(
             status_code=422,

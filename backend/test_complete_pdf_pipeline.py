@@ -51,12 +51,45 @@ from app.confidence_engine import evaluate_claim_confidence
 from app.final_claim_decision import evaluate_final_claim_decision
 from app.claim_processor import process_claim
 from app.main import app
+from app.auth import create_access_token, password_hash
+from app.database import SessionLocal
+from app.models import User
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
 TMP_DIR = backend_dir / "test_tmp_artifacts"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_pipeline_claimant_token() -> str:
+    db = SessionLocal()
+    try:
+        email = "pipeline_claimant@claimbridge.internal"
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            user = User(
+                full_name="Pipeline Claimant",
+                email=email,
+                role="claimant",
+                portal="Claimant",
+                organization="Chong Hua Hospital",
+                account_status="active",
+                email_verified_at=None,
+                password_hash=password_hash.hash("Secret#123"),
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        return create_access_token(
+            str(user.id),
+            user.email,
+            user.role,
+            user.portal,
+            user.organization,
+        )
+    finally:
+        db.close()
 
 
 def cleanup_tmp():
@@ -446,6 +479,9 @@ def test_17_human_review_routing():
 # TEST 18: Database persistence & safe retries (idempotency)
 # =========================================================
 def test_18_db_persistence_and_retry():
+    token = get_pipeline_claimant_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
     # Create claim via API
     claim_payload = {
         "patientName": "Retry Test Patient",
@@ -458,7 +494,7 @@ def test_18_db_persistence_and_retry():
         "admissionDate": "2026-08-01",
         "dischargeDate": "2026-08-05",
     }
-    claim_res = client.post("/claims", json=claim_payload)
+    claim_res = client.post("/claims", json=claim_payload, headers=headers)
     assert claim_res.status_code == 200
     claim_id = claim_res.json()["id"]
 
@@ -472,20 +508,25 @@ def test_18_db_persistence_and_retry():
 
     # Upload
     with open(p, "rb") as f:
-        up_res = client.post("/documents/upload", data={"claim_id": claim_id, "category": "Auto-Detect"}, files={"file": ("test_retry_bill.pdf", f, "application/pdf")})
+        up_res = client.post(
+            "/documents/upload",
+            data={"claim_id": claim_id, "category": "Auto-Detect"},
+            files={"file": ("test_retry_bill.pdf", f, "application/pdf")},
+            headers=headers,
+        )
     assert up_res.status_code == 200
     doc_id = up_res.json()["documentId"]
 
     # Process first time
-    proc1 = client.post(f"/documents/{doc_id}/process")
+    proc1 = client.post(f"/documents/{doc_id}/process", headers=headers)
     assert proc1.status_code == 200
 
     # Retry processing second time (Idempotent test)
-    proc2 = client.post(f"/documents/{doc_id}/process")
+    proc2 = client.post(f"/documents/{doc_id}/process", headers=headers)
     assert proc2.status_code == 200, f"Retry failed: {proc2.text}"
 
     # Verify claim detail
-    get_claim = client.get(f"/claims/{claim_id}")
+    get_claim = client.get(f"/claims/{claim_id}", headers=headers)
     assert get_claim.status_code == 200
     data = get_claim.json()
     assert len(data["documents"]) == 1
@@ -498,21 +539,33 @@ def test_18_db_persistence_and_retry():
 # TEST 19: API error responses and validation checks
 # =========================================================
 def test_19_api_errors_and_validation():
+    headers = {"Authorization": f"Bearer {get_pipeline_claimant_token()}"}
+
     # 1. Invalid UUID
-    res_bad_id = client.post("/documents/invalid-uuid/process")
+    res_bad_id = client.post("/documents/invalid-uuid/process", headers=headers)
     assert res_bad_id.status_code in {400, 422}
 
     # 2. Non-existent document UUID
     random_uuid = str(uuid.uuid4())
-    res_not_found = client.post(f"/documents/{random_uuid}/process")
+    res_not_found = client.post(f"/documents/{random_uuid}/process", headers=headers)
     assert res_not_found.status_code == 404
 
     # 3. Upload empty file
-    empty_upload = client.post("/documents/upload", data={"category": "Hospital Bill"}, files={"file": ("empty.pdf", b"", "application/pdf")})
+    empty_upload = client.post(
+        "/documents/upload",
+        data={"category": "Hospital Bill"},
+        files={"file": ("empty.pdf", b"", "application/pdf")},
+        headers=headers,
+    )
     assert empty_upload.status_code == 400
 
     # 4. Upload corrupted PDF header
-    bad_pdf = client.post("/documents/upload", data={"category": "Hospital Bill"}, files={"file": ("fake.pdf", b"NOT_A_PDF", "application/pdf")})
+    bad_pdf = client.post(
+        "/documents/upload",
+        data={"category": "Hospital Bill"},
+        files={"file": ("fake.pdf", b"NOT_A_PDF", "application/pdf")},
+        headers=headers,
+    )
     assert bad_pdf.status_code == 400
 
     TestSuite.record(19, "API Error Responses & Input Validation", "PASSED", "400, 404, 422 responses verified")
@@ -522,18 +575,26 @@ def test_19_api_errors_and_validation():
 # TEST 20: End-to-End API upload, classification & pipeline
 # =========================================================
 def test_20_end_to_end_api_pipeline():
+    token = get_pipeline_claimant_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
     # Create claim
-    c_res = client.post("/claims", json={
-        "patientName": "Edward Final Patient",
-        "patientAge": 38,
-        "hospital": "Chong Hua Hospital",
-        "policyNumber": f"77{uuid.uuid4().int % 100000000:08d}",
-        "insuranceProvider": "Pacific Healthcare",
-        "diagnosis": "Acute Appendicitis",
-        "claimedAmount": 92000.0,
-        "admissionDate": "2026-09-10",
-        "dischargeDate": "2026-09-14",
-    })
+    c_res = client.post(
+        "/claims",
+        json={
+            "patientName": "Edward Final Patient",
+            "patientAge": 38,
+            "hospital": "Chong Hua Hospital",
+            "policyNumber": f"77{uuid.uuid4().int % 100000000:08d}",
+            "insuranceProvider": "Pacific Healthcare",
+            "diagnosis": "Acute Appendicitis",
+            "claimedAmount": 92000.0,
+            "admissionDate": "2026-09-10",
+            "dischargeDate": "2026-09-14",
+        },
+        headers=headers,
+    )
+    assert c_res.status_code == 200, c_res.text
     claim_id = c_res.json()["id"]
 
     # Upload PDF without category ("Auto-Detect")
@@ -545,13 +606,18 @@ def test_20_end_to_end_api_pipeline():
     doc.close()
 
     with open(p, "rb") as f:
-        up_res = client.post("/documents/upload", data={"claim_id": claim_id, "category": "Auto-Detect"}, files={"file": ("e2e_bill.pdf", f, "application/pdf")})
-    assert up_res.status_code == 200
+        up_res = client.post(
+            "/documents/upload",
+            data={"claim_id": claim_id, "category": "Auto-Detect"},
+            files={"file": ("e2e_bill.pdf", f, "application/pdf")},
+            headers=headers,
+        )
+    assert up_res.status_code == 200, up_res.text
     doc_id = up_res.json()["documentId"]
 
     # Process through pipeline
-    proc_res = client.post(f"/documents/{doc_id}/process")
-    assert proc_res.status_code == 200
+    proc_res = client.post(f"/documents/{doc_id}/process", headers=headers)
+    assert proc_res.status_code == 200, proc_res.text
     pipeline_res = proc_res.json()["pipeline"]
 
     assert pipeline_res["classification"]["document_type"] == "hospital_bill"
@@ -559,8 +625,8 @@ def test_20_end_to_end_api_pipeline():
     assert pipeline_res["claim_readiness"]["readiness_score"] >= 60.0
 
     # Fetch document OCR endpoint
-    ocr_ep = client.get(f"/documents/{doc_id}/ocr")
-    assert ocr_ep.status_code == 200
+    ocr_ep = client.get(f"/documents/{doc_id}/ocr", headers=headers)
+    assert ocr_ep.status_code == 200, ocr_ep.text
     assert ocr_ep.json()["extractedFields"]["patient_name"] == "Edward Final Patient"
 
     TestSuite.record(20, "End-to-End API Pipeline", "PASSED", f"Classified: {pipeline_res['classification']['document_type']}, Readiness: {pipeline_res['claim_readiness']['readiness_score']}%")

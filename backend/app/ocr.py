@@ -1,3 +1,19 @@
+import os
+import shutil
+
+try:
+    import pytesseract
+    for cand in [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+    ]:
+        if os.path.isfile(cand):
+            pytesseract.pytesseract.tesseract_cmd = cand
+            break
+except Exception:
+    pass
+
 import io
 import os
 import re
@@ -131,21 +147,29 @@ def _ocr_single_image(image_input: Union[str, np.ndarray, Image.Image]) -> Dict[
         else:
             pil_img = image_input
 
-        extracted_text_raw = pytesseract.image_to_string(pil_img)
-        raw_lines = [l.strip() for l in extracted_text_raw.splitlines() if l.strip()]
+        data = pytesseract.image_to_data(pil_img, output_type=pytesseract.Output.DICT)
+        n_boxes = len(data.get("text", []))
+        line_dict = {}
+        all_conf = []
 
+        for i in range(n_boxes):
+            word = (data["text"][i] or "").strip()
+            if not word:
+                continue
+            conf_val = data["conf"][i]
+            conf_float = float(conf_val) / 100.0 if isinstance(conf_val, (int, float, str)) and str(conf_val).replace("-", "").isdigit() and float(conf_val) > 0 else 0.85
+            block_num = data.get("block_num", [0]*n_boxes)[i]
+            par_num = data.get("par_num", [0]*n_boxes)[i]
+            line_num = data.get("line_num", [0]*n_boxes)[i]
+            key = (block_num, par_num, line_num)
+            if key not in line_dict:
+                line_dict[key] = []
+            line_dict[key].append(word)
+            all_conf.append(conf_float)
+
+        raw_lines = [" ".join(words) for words in line_dict.values() if words]
         if raw_lines:
-            try:
-                data = pytesseract.image_to_data(pil_img, output_type=pytesseract.Output.DICT)
-                tess_scores = [
-                    float(c) / 100.0
-                    for c in data.get("conf", [])
-                    if isinstance(c, (int, float, str)) and str(c).replace("-", "").isdigit() and float(c) > 0
-                ]
-                avg_conf = (sum(tess_scores) / len(tess_scores)) if tess_scores else 0.85
-            except Exception:
-                avg_conf = 0.85
-
+            avg_conf = (sum(all_conf) / len(all_conf)) if all_conf else 0.85
             tess_lines = [{"text": l, "confidence": round(avg_conf, 4)} for l in raw_lines]
             return {
                 "text": "\n".join(raw_lines),

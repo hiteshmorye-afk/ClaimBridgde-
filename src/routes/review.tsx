@@ -441,7 +441,27 @@ function HumanReviewPage() {
             {claimError}
           </div>
         ) : activeClaim ? (
-          <HumanReviewTriage claim={activeClaim} onStatusUpdated={loadQueue} />
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-3.5 rounded-xl bg-card border border-border shadow-sm">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xs text-muted-foreground">Adjudicating Claim:</span>
+                <span className="font-mono text-xs font-bold text-primary">{activeClaim.id}</span>
+                {activeClaim.claimType === "cashless" && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    Hospital Cashless Claim
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate({ to: `/claims/${activeClaim.id}` })}
+                className="text-xs font-bold text-primary hover:text-primary/80 transition flex items-center gap-1.5"
+              >
+                Open Full Cashless Journey & Multi-Doc OCR Workspace →
+              </button>
+            </div>
+            <HumanReviewTriage claim={activeClaim} onStatusUpdated={loadQueue} />
+          </div>
         ) : null}
 
       </div>

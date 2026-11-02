@@ -124,64 +124,6 @@ function ClaimsIndexPage() {
                 Export Authorized Claims
               </button>
             )}
-
-            {isClaimant && (
-              <Link
-                to="/claims/new"
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-4 text-xs font-semibold text-white shadow-md shadow-[#3B82F6]/30"
-              >
-                <Plus className="size-4" />
-                Add Claim
-              </Link>
-            )}
-          </div>
-        </div>
-
-        {isClaimant && (
-          <section className="grid gap-3 sm:grid-cols-3">
-            {[
-              { label: "My claims", value: claims.length, icon: FileSpreadsheet },
-              { label: "Pending actions", value: claims.filter((claim) => !["Approved", "Rejected"].includes(claim.status)).length, icon: Clock },
-              { label: "Recorded decisions", value: claims.filter((claim) => ["Approved", "Rejected"].includes(claim.status)).length, icon: CheckCircle2 },
-            ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-[#1F2937] dark:bg-[#111827]">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500 dark:text-[#9CA3AF]">{label}</span>
-                  <Icon className="size-4 text-[#3B82F6]" />
-                </div>
-                <p className="mt-2 font-mono text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* SEARCH & FILTERS */}
-        <div className="flex flex-col gap-4 rounded-2xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative w-full sm:w-80">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search claim ID, patient, hospital..."
-              className="h-10 w-full rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] pl-9 pr-3 text-xs text-slate-900 dark:text-white outline-none focus:border-[#3B82F6]"
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-100 dark:bg-[#0B0F17] p-1">
-            {["All", "Ready for Submission", "Needs Review", "Under Analysis", "Approved", "Rejected"].map((st) => (
-              <button
-                key={st}
-                onClick={() => setStatusFilter(st)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                  statusFilter === st
-                    ? "bg-[#3B82F6] text-white shadow-sm"
-                    : "text-slate-600 dark:text-[#9CA3AF] hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                {st}
-              </button>
-            ))}
           </div>
         </div>
 

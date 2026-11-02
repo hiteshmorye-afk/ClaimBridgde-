@@ -169,18 +169,35 @@ def test_01_real_claim_lookup_by_uuid_and_claim_number():
 
 
 def test_02_claim_lookup_not_found():
-    """Verify 404 response for non-existent claim ID and claim number."""
-    # Non-existent UUID
+    """Verify unauthenticated request is rejected before claim lookup occurs."""
+    # Unauthenticated requests must be rejected before any claim existence check.
     random_uuid = str(uuid.uuid4())
     res = client.get(f"/claims/{random_uuid}")
+    assert res.status_code == 401
+    assert "token is required" in res.json()["detail"].lower()
+
+    # Non-existent human-readable claim number is also rejected before lookup.
+    res_num = client.get("/claims/CLM-NONEXISTENT-999")
+    assert res_num.status_code == 401
+    assert "token is required" in res_num.json()["detail"].lower()
+
+    Change34TestSuite.record(2, "Claim Lookup Auth Enforcement", "PASSED", "401 returned before claim lookup")
+
+
+def test_02b_authenticated_claim_lookup_not_found():
+    """Verify authenticated requests for missing claims return 404 after auth passes."""
+    entities = setup_test_entities()
+    token = entities["token_coord1"]
+
+    random_uuid = str(uuid.uuid4())
+    res = client.get(f"/claims/{random_uuid}", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 404
     assert f"Claim '{random_uuid}' was not found in active workspace." in res.json()["detail"]
 
-    # Non-existent human-readable claim number
-    res_num = client.get("/claims/CLM-NONEXISTENT-999")
+    res_num = client.get("/claims/CLM-NONEXISTENT-999", headers={"Authorization": f"Bearer {token}"})
     assert res_num.status_code == 404
 
-    Change34TestSuite.record(2, "Claim Lookup 404 Handling", "PASSED", "404 returned without crashing")
+    Change34TestSuite.record(2, "Authenticated Claim Lookup Not Found", "PASSED", "404 returned after authentication")
 
 
 def test_03_unauthenticated_tpa_decision_rejected_401():

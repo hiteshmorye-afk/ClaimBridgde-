@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import React, { useState } from "react";
-import { Settings, Save, Server, Shield, Zap, Database, BrainCircuit, Key } from "lucide-react";
+import { Settings, Save, Server, Shield, Zap, Database, BrainCircuit, Key, Users } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { AdminUserManagement } from "@/components/admin/AdminUserManagement";
+import { getCurrentUser } from "@/api/auth";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/settings")({
@@ -10,7 +12,7 @@ export const Route = createFileRoute("/settings")({
       { title: "Settings & Configuration — ClaimBridge" },
       {
         name: "description",
-        content: "Configure FastAPI endpoints, RAG thresholds and workspace roles.",
+        content: "Configure FastAPI endpoints, RAG thresholds, workspace roles, and user governance.",
       },
     ],
   }),
@@ -18,8 +20,12 @@ export const Route = createFileRoute("/settings")({
 });
 
 function SettingsPage() {
+  const currentUser = getCurrentUser();
+  const isAdmin = currentUser?.role === "admin";
+  const [activeSection, setActiveSection] = useState<"settings" | "users">(isAdmin ? "users" : "settings");
+
   const [apiEndpoint, setApiEndpoint] = useState(
-    import.meta.env["VITE_API_BASE_URL"] || "http://localhost:8001"
+    import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"
   );
   const [ocrThreshold, setOcrThreshold] = useState("95");
   const [ragSimilarity, setRagSimilarity] = useState("0.75");
@@ -37,71 +43,111 @@ function SettingsPage() {
       title="Platform Settings & Configuration"
       breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "Settings" }]}
     >
-      <div className="mx-auto max-w-4xl space-y-6">
-        
-        <form onSubmit={handleSave} className="rounded-2xl border border-slate-200 dark:border-[#1F2937] bg-white dark:bg-[#111827] p-6 shadow-xl space-y-6">
-          <div className="border-b border-slate-200 dark:border-[#1F2937] pb-4">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white">API Connection & AI Engine Settings</h3>
-            <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
-              Configure connection parameters for existing FastAPI + PostgreSQL backend.
-            </p>
-          </div>
+      <div className="mx-auto max-w-5xl space-y-6">
+        {/* Navigation Tabs */}
+        <div className="flex border-b border-border space-x-2">
+          <button
+            type="button"
+            onClick={() => setActiveSection("settings")}
+            className={`px-4 py-2.5 text-xs font-bold border-b-2 transition flex items-center gap-2 ${
+              activeSection === "settings"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            AI & System Parameters
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSection("users")}
+            className={`px-4 py-2.5 text-xs font-bold border-b-2 transition flex items-center gap-2 ${
+              activeSection === "users"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            User & Organization Governance
+            {isAdmin && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400">
+                Admin
+              </span>
+            )}
+          </button>
+        </div>
 
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs font-semibold text-slate-700 dark:text-[#9CA3AF]">FastAPI REST Endpoint URL</label>
-              <input
-                type="url"
-                value={apiEndpoint}
-                onChange={(e) => setApiEndpoint(e.target.value)}
-                className="mt-1 h-10 w-full rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] px-3 font-mono text-xs text-slate-900 dark:text-white outline-none focus:border-[#3B82F6]"
-              />
-              <p className="mt-1 text-[10px] text-slate-400">Referenced via VITE_API_BASE_URL in src/api/client.ts</p>
+        {activeSection === "users" ? (
+          <AdminUserManagement />
+        ) : (
+          <form
+            onSubmit={handleSave}
+            className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-6"
+          >
+            <div className="border-b border-border pb-4">
+              <h3 className="text-base font-bold text-foreground">API Connection & AI Engine Settings</h3>
+              <p className="text-xs text-muted-foreground">
+                Configure connection parameters for existing FastAPI + PostgreSQL backend.
+              </p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 dark:text-[#9CA3AF]">OCR Confidence Threshold (%)</label>
+                <label className="text-xs font-semibold text-foreground">FastAPI REST Endpoint URL</label>
                 <input
-                  type="number"
-                  value={ocrThreshold}
-                  onChange={(e) => setOcrThreshold(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] px-3 font-mono text-xs text-slate-900 dark:text-white outline-none focus:border-[#3B82F6]"
+                  type="url"
+                  value={apiEndpoint}
+                  onChange={(e) => setApiEndpoint(e.target.value)}
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-secondary px-3 font-mono text-xs text-foreground outline-none focus:border-primary"
                 />
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Referenced via VITE_API_BASE_URL in src/api/client.ts
+                </p>
               </div>
 
-              <div>
-                <label className="text-xs font-semibold text-slate-700 dark:text-[#9CA3AF]">RAG Vector Similarity Cutoff</label>
-                <input
-                  type="text"
-                  value={ragSimilarity}
-                  onChange={(e) => setRagSimilarity(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] px-3 font-mono text-xs text-slate-900 dark:text-white outline-none focus:border-[#3B82F6]"
-                />
-              </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label className="text-xs font-semibold text-foreground">OCR Confidence Threshold (%)</label>
+                  <input
+                    type="number"
+                    value={ocrThreshold}
+                    onChange={(e) => setOcrThreshold(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-secondary px-3 font-mono text-xs text-foreground outline-none focus:border-primary"
+                  />
+                </div>
 
-              <div>
-                <label className="text-xs font-semibold text-slate-700 dark:text-[#9CA3AF]">Auto-Approval Cutoff Score</label>
-                <input
-                  type="number"
-                  value={autoApproveScore}
-                  onChange={(e) => setAutoApproveScore(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 dark:border-[#1F2937] bg-slate-50 dark:bg-[#0B0F17] px-3 font-mono text-xs text-slate-900 dark:text-white outline-none focus:border-[#3B82F6]"
-                />
+                <div>
+                  <label className="text-xs font-semibold text-foreground">RAG Vector Similarity Cutoff</label>
+                  <input
+                    type="text"
+                    value={ragSimilarity}
+                    onChange={(e) => setRagSimilarity(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-secondary px-3 font-mono text-xs text-foreground outline-none focus:border-primary"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-foreground">Auto-Approval Cutoff Score</label>
+                  <input
+                    type="number"
+                    value={autoApproveScore}
+                    onChange={(e) => setAutoApproveScore(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-secondary px-3 font-mono text-xs text-foreground outline-none focus:border-primary"
+                  />
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex justify-end pt-4 border-t border-slate-200 dark:border-[#1F2937]">
-            <button
-              type="submit"
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3B82F6] to-[#06B6D4] px-6 text-xs font-bold text-white shadow-lg shadow-[#3B82F6]/30 hover:shadow-xl transition"
-            >
-              <Save className="size-4" /> Save Configuration
-            </button>
-          </div>
-        </form>
-
+            <div className="flex justify-end pt-4 border-t border-border">
+              <button
+                type="submit"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-5 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 transition"
+              >
+                <Save className="size-4" /> Save Configuration
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </AppLayout>
   );

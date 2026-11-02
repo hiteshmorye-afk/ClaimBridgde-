@@ -3,13 +3,28 @@
  * Connects the frontend to the existing FastAPI backend.
  */
 
-const API_BASE_URL =
-  import.meta.env["VITE_API_BASE_URL"] || "http://localhost:8001";
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"
+).replace(/\/+$/, "");
 
 export interface ApiResponse<T = any> {
   data: T | null;
   error?: string;
   status: number;
+  retryAfter?: number;
+}
+
+function buildApiUrl(endpoint: string): string {
+  if (!endpoint) {
+    return API_BASE_URL;
+  }
+
+  if (/^https?:\/\//i.test(endpoint)) {
+    return endpoint;
+  }
+
+  const normalized = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  return `${API_BASE_URL}${normalized}`;
 }
 
 export async function apiFetch<T = any>(
@@ -34,14 +49,12 @@ export async function apiFetch<T = any>(
 
   const config: RequestInit = {
     ...options,
+    credentials: options.credentials ?? "include",
     headers,
   };
 
   try {
-    const url = endpoint.startsWith("http")
-      ? endpoint
-      : `${API_BASE_URL}${endpoint}`;
-
+    const url = buildApiUrl(endpoint);
     const response = await fetch(url, config);
 
     let data: any = null;
@@ -55,15 +68,22 @@ export async function apiFetch<T = any>(
     }
 
     if (!response.ok) {
-      const errorMessage =
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+      const rawError =
         (typeof data === "object" && data?.detail) ||
         (typeof data === "object" && data?.message) ||
         `HTTP Error ${response.status}`;
+      const errorMessage =
+        response.status === 429 && typeof retryAfter === "number" && Number.isFinite(retryAfter)
+          ? `Too many verification requests. Please wait ${retryAfter} seconds before trying again.`
+          : rawError;
 
       return {
         data: null,
         error: errorMessage,
         status: response.status,
+        retryAfter,
       };
     }
 
@@ -81,7 +101,7 @@ export async function apiFetch<T = any>(
       data: null,
       error:
         error?.message ||
-        "Network request failed. Please ensure the ClaimBridge backend is running.",
+        "Network request failed. Please ensure the ClaimBridge backend is running at http://127.0.0.1:8000.",
       status: 0,
     };
   }

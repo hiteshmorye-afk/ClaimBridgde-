@@ -21,7 +21,28 @@ function AuthPage() {
 
   const handleAuthenticated = () => {
     const user = getCurrentUser();
-    if (user?.role === "claimant") {
+    if (!user) {
+      navigate({ to: "/auth" });
+      return;
+    }
+
+    const effectiveRole = (user.canonical_role || user.role || "").toLowerCase();
+
+    if (effectiveRole === "admin") {
+      navigate({ to: "/settings" });
+    } else if (
+      effectiveRole === "claim_officer" ||
+      effectiveRole === "claims_officer" ||
+      effectiveRole === "tpa_reviewer" ||
+      effectiveRole === "reviewer"
+    ) {
+      navigate({ to: "/review" });
+    } else if (
+      effectiveRole === "claimant" ||
+      effectiveRole === "hospital_coordinator" ||
+      effectiveRole === "patient" ||
+      effectiveRole === "coordinator"
+    ) {
       navigate({ to: "/claims" });
     } else {
       navigate({ to: "/" });

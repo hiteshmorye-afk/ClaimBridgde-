@@ -15,7 +15,8 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { DOC_CATEGORIES } from "@/lib/claims";
 import { DOCUMENT_CATALOGUE, DOCUMENT_SECTIONS } from "@/lib/documentCatalogue";
 import { toast } from "sonner";
-import { uploadDocument, processDocument, fetchDocuments, VaultDocument } from "@/api/documents";
+import { uploadDocument, processDocument, fetchDocuments, fetchDocumentDetail, VaultDocument, DocumentDetailResponse } from "@/api/documents";
+import { DocumentDetail } from "@/components/DocumentDetail";
 
 export const Route = createFileRoute("/documents")({
   head: () => ({
@@ -36,6 +37,8 @@ function DocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
+  const [selectedDocument, setSelectedDocument] = useState<DocumentDetailResponse | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -53,6 +56,23 @@ function DocumentsPage() {
       setLoading(false);
     }
   }, [search, categoryFilter]);
+
+  const handleViewDocument = useCallback(async (documentId: string) => {
+    if (!documentId) return;
+    setDetailLoading(true);
+    try {
+      const detail = await fetchDocumentDetail(documentId);
+      if (!detail) {
+        throw new Error("Document detail payload was empty.");
+      }
+      setSelectedDocument(detail);
+    } catch (error: any) {
+      console.error("Failed to load document verification detail:", error);
+      toast.error(error?.message || "Unable to load the document verification report.");
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadDocuments();
@@ -249,46 +269,21 @@ function DocumentsPage() {
             <table className="w-full text-left">
 
               <thead className="bg-slate-50 dark:bg-[#0E1420] text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-[#9CA3AF]">
-
                 <tr className="border-b border-slate-200 dark:border-[#1F2937]">
-
-                  <th className="px-6 py-3.5">
-                    Document File
-                  </th>
-
-                  <th className="px-6 py-3.5">
-                    Category
-                  </th>
-
-                  <th className="px-6 py-3.5">
-                    Linked Claim
-                  </th>
-
-                  <th className="px-6 py-3.5">
-                    OCR Accuracy
-                  </th>
-
-                  <th className="px-6 py-3.5">
-                    File Size
-                  </th>
-
-                  <th className="px-6 py-3.5">
-                    Status
-                  </th>
-
-                  <th className="px-6 py-3.5 text-right">
-                    Actions
-                  </th>
-
+                  <th className="px-6 py-3.5">Document</th>
+                  <th className="px-6 py-3.5">Category</th>
+                  <th className="px-6 py-3.5">Linked Claim</th>
+                  <th className="px-6 py-3.5">Upload Date</th>
+                  <th className="px-6 py-3.5">Processing Status</th>
+                  <th className="px-6 py-3.5 text-right">Action</th>
                 </tr>
-
               </thead>
 
               <tbody className="divide-y divide-slate-200 dark:divide-[#1F2937] text-xs">
 
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-500">
+                    <td colSpan={6} className="py-12 text-center text-slate-500">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Loader2 className="size-6 animate-spin text-[#3B82F6]" />
                         <span className="text-xs font-semibold">Loading documents vault from backend...</span>
@@ -297,7 +292,7 @@ function DocumentsPage() {
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-500">
+                    <td colSpan={6} className="py-12 text-center text-slate-500">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Inbox className="size-8 text-slate-400" />
                         <p className="text-sm font-bold text-slate-900 dark:text-white">No documents found in vault</p>
@@ -365,69 +360,47 @@ function DocumentsPage() {
                       )}
                     </td>
 
-                    <td className="px-6 py-4">
-                      <span className="font-mono font-bold text-[#06B6D4]">
-                        {doc.confidence}%
-                      </span>
-                    </td>
-
-                    <td className="px-6 py-4 font-mono text-slate-500 dark:text-[#9CA3AF]">
-                      {doc.size}
+                    <td className="px-6 py-4 text-xs font-mono text-slate-600 dark:text-[#9CA3AF]">
+                      {doc.date}
                     </td>
 
                     <td className="px-6 py-4">
-
                       <span
                         className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-semibold ${
                           doc.status === "Verified"
                             ? "border-[#10B981]/40 bg-[#10B981]/10 text-[#10B981]"
-                            : "border-[#EF4444]/40 bg-[#EF4444]/10 text-[#EF4444]"
+                            : doc.status.includes("Incorrect")
+                            ? "border-rose-500/40 bg-rose-500/10 text-rose-400"
+                            : "border-amber-500/40 bg-amber-500/10 text-amber-300"
                         }`}
                       >
                         {doc.status}
                       </span>
-
                     </td>
 
                     <td className="px-6 py-4 text-right">
-
                       <div className="flex items-center justify-end gap-2">
-
-                        {doc.claimUuid ? (
-                          <Link
-                            to="/claims/$claimId"
-                            params={{ claimId: doc.claimUuid }}
-                            className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#3B82F6] transition"
-                            title="Inspect Document in Claim Dossier"
-                          >
-                            <Eye className="size-4" />
-                          </Link>
-                        ) : (
-                          <button
-                            onClick={() =>
-                              toast.info(
-                                `Viewing ${doc.name} metadata`
-                              )
-                            }
-                            className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#3B82F6]"
-                          >
-                            <Eye className="size-4" />
-                          </button>
-                        )}
-
                         <button
-                          onClick={() =>
-                            toast.success(
-                              `Downloading ${doc.name}`
-                            )
-                          }
-                          className="rounded-lg border border-slate-200 dark:border-[#1F2937] p-2 text-slate-500 hover:text-[#10B981]"
+                          onClick={() => handleViewDocument(doc.id)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-600 transition hover:bg-blue-500 hover:text-white dark:text-blue-400 dark:hover:bg-blue-600"
+                          title="Open document extraction & verification report"
+                          disabled={detailLoading}
                         >
-                          <Download className="size-4" />
+                          <Eye className="size-3.5" />
+                          <span>View Extracted Information &rarr;</span>
                         </button>
 
+                        <button
+                          onClick={() => {
+                            window.open(`/documents/${doc.id}/file`, '_blank');
+                            toast.success(`Opening ${doc.name}`);
+                          }}
+                          className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition hover:text-[#10B981] dark:border-[#1F2937]"
+                          title="Download / View original"
+                        >
+                          <Download className="size-3.5" />
+                        </button>
                       </div>
-
                     </td>
 
                   </tr>
@@ -442,6 +415,31 @@ function DocumentsPage() {
 
         </div>
 
+        {selectedDocument ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-[#1F2937] dark:bg-[#111827]">
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 dark:border-[#1F2937] dark:bg-[#111827]">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-[#9CA3AF]">
+                    ClaimBridge verification
+                  </p>
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">Document verification report</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDocument(null)}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:text-[#3B82F6] dark:border-[#1F2937] dark:text-[#D1D5DB]"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="p-6">
+                <DocumentDetail doc={selectedDocument} />
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </AppLayout>
   );

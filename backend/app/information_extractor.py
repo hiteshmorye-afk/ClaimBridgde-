@@ -477,14 +477,16 @@ def extract_identity_proof_details(text: str) -> Dict[str, Any]:
             masked_number = f"{m_voter.group(1)[:3]}****{m_voter.group(1)[-2:]}"
 
     # Extract name on ID
-    m_name = re.search(r"(?:Name|To\s*[:\-]|Holder\s*[:\-])\s*([A-Za-z\s.'’]+?)(?=\s+(?:S/O|D/O|W/O|DOB|Father|Gender|\n|$))", norm, flags=re.IGNORECASE)
+    m_name = re.search(r"(?:Name|To\s*[:\-\n]|Holder\s*[:\-])\s*([A-Za-z\s.'’]+?)(?=\s+(?:C/O|S/O|D/O|W/O|DOB|Father|Gender|\n|$))", norm, flags=re.IGNORECASE)
     if m_name:
         holder_name = m_name.group(1).strip()
     else:
         holder_name = extract_patient_name(norm)
 
     # DOB / YOB
-    m_dob = re.search(r"(?:DOB|Date\s+of\s+Birth|Year\s+of\s+Birth|YOB)\s*[:\-]\s*([A-Za-z0-9.,/\- ]+?)(?=\s+(?:Gender|Male|Female|\n|$))", norm, flags=re.IGNORECASE)
+    m_dob = re.search(r"(?:DOB|Date\s+of\s+Birth|Year\s+of\s+Birth|YOB|0OB)\s*[:\-]?\s*([A-Za-z0-9.,/\- ]+?)(?=\s+(?:Gender|Male|Female|\n|$))", norm, flags=re.IGNORECASE)
+    if not m_dob:
+        m_dob = re.search(r"\b(\d{2}[/\-.]\d{2}[/\-.]\d{4})\b", norm)
     if m_dob:
         dob_or_yob = m_dob.group(1).strip()
 
@@ -743,11 +745,18 @@ def extract_consultation_details(text: str) -> Dict[str, Any]:
                 "raw": match.group(0),
             })
 
+    # Diagnosis
+    diagnosis = None
+    diag_match = re.search(r"(?:Clinical\s+Diagnosis|Provisional\s+Diagnosis|Diagnosis)\s*[:\-]\s*([^\r\n]+)", normalized_text, flags=re.IGNORECASE)
+    if diag_match:
+        diagnosis = re.split(r"\s+(?:ICD|Procedure|Treatment|Rx)\s*[:\-]", diag_match.group(1).strip(), flags=re.IGNORECASE)[0].strip()
+
     return {
         "doctor_name": doctor,
         "clinic_name": clinic,
         "prescription_date": presc_date,
         "symptoms": symptoms,
+        "diagnosis": diagnosis,
         "medications": medications,
     }
 
@@ -1144,6 +1153,8 @@ def extract_information(
         core_result["document_type"] = "consultation_letter"
         if details.get("doctor_name"):
             core_result["doctor_name"] = details["doctor_name"]
+        if details.get("diagnosis"):
+            core_result["diagnosis"] = details["diagnosis"]
         core_result["medications"] = details.get("medications", [])
 
     elif canonical_type == "diagnostic_report":

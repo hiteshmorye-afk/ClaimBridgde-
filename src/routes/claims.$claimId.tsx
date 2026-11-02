@@ -234,14 +234,25 @@ function ClaimDetailPage() {
   const isClaimant = currentUser?.role === "claimant";
   const isClaimsOfficer = currentUser?.role === "claims_officer";
   const readinessComponents = readinessBreakdown
-    ? Object.entries(readinessBreakdown.components).map(([key, component]) => ({
+    ? Object.entries(readinessBreakdown.components).map(([key, component]: [string, any]) => ({
         key,
-        label: {
-          validation: "Validation",
-          medical: "Medical evidence",
-          policy: "Policy assessment",
-          ocr: "Document processing / OCR",
-        }[key] || key,
+        label:
+          component.label ||
+          component.name ||
+          {
+            patient_identity: "Patient Identity & Details",
+            policy_information: "Insurance Policy Information",
+            medical_diagnosis: "Medical Diagnosis & ICD-10",
+            required_documents: "Required Documents",
+            document_quality: "Document Quality & Correctness",
+            cross_document_consistency: "Cross-Document Consistency",
+            consent_authorization: "Consent & Authorization",
+            validation: "Validation",
+            medical: "Medical evidence",
+            policy: "Policy assessment",
+            ocr: "Document processing / OCR",
+          }[key] ||
+          key.replace(/_/g, " "),
         ...component,
       }))
     : [];
@@ -502,7 +513,47 @@ function ClaimDetailPage() {
                     {readinessBreakdown.explanation}
                   </p>
                 )}
-                {readinessBlockers.length > 0 && (
+                {readinessBreakdown?.isProvisional && (
+                  <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+                    <strong>Provisional Assessment Notice</strong>
+                    <p className="mt-1 text-[11px]">
+                      This readiness score is provisional pending completion of critical claim prerequisites:
+                    </p>
+                    <ul className="mt-1 list-disc space-y-1 pl-4">
+                      {(readinessBreakdown.provisionalReasons || []).map((reason: string, idx: number) => (
+                        <li key={idx}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {readinessBreakdown?.missingRequirements && readinessBreakdown.missingRequirements.length > 0 && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
+                    <strong>Stage Missing Requirements ({readinessBreakdown.stage || "Pre-Auth"})</strong>
+                    <ul className="mt-1 list-disc space-y-1 pl-4">
+                      {readinessBreakdown.missingRequirements.map((item: string, index: number) => (
+                        <li key={`${item}-${index}`}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {readinessBreakdown?.recommendedActions && readinessBreakdown.recommendedActions.length > 0 && (
+                  <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-800 dark:text-blue-200">
+                    <strong>Recommended Actions</strong>
+                    <ul className="mt-1 space-y-1.5 pl-2">
+                      {readinessBreakdown.recommendedActions.map((rec: any, index: number) => (
+                        <li key={index} className="flex items-center gap-2 text-[11px]">
+                          <span className="font-semibold">{rec.action || rec}</span>
+                          {rec.targetTitle && (
+                            <span className="rounded bg-blue-500/20 px-1.5 py-0.5 font-mono text-[9px] text-blue-600 dark:text-blue-300">
+                              {rec.targetTitle}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {readinessBlockers.length > 0 && !readinessBreakdown?.missingRequirements && (
                   <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">
                     <strong>Blocking findings</strong>
                     <ul className="mt-1 list-disc space-y-1 pl-4">
@@ -516,6 +567,11 @@ function ClaimDetailPage() {
                     <ul className="mt-1 list-disc space-y-1 pl-4">
                       {readinessWarnings.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
                     </ul>
+                  </div>
+                )}
+                {readinessBreakdown?.disclaimer && (
+                  <div className="rounded-xl border border-border bg-secondary/30 p-2.5 text-[10px] text-muted-foreground leading-relaxed">
+                    <strong>Statutory / Preparation Notice:</strong> {readinessBreakdown.disclaimer}
                   </div>
                 )}
               </div>

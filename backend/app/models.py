@@ -9,6 +9,7 @@ from sqlalchemy import (
     Numeric,
     ForeignKey,
     Integer,
+    Boolean,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -94,6 +95,28 @@ class User(Base):
         nullable=True,
     )
 
+    designation = Column(
+        String(100),
+        nullable=True,
+    )
+
+    employee_id = Column(
+        String(50),
+        nullable=True,
+    )
+
+    last_login_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    is_active = Column(
+        Boolean,
+        server_default=text("true"),
+        nullable=False,
+        default=True,
+    )
+
 
 class Patient(Base):
     __tablename__ = "patients"
@@ -121,6 +144,21 @@ class Patient(Base):
         nullable=True,
     )
 
+    emergency_contact_name = Column(
+        String(100),
+        nullable=True,
+    )
+
+    emergency_contact_phone = Column(
+        String(20),
+        nullable=True,
+    )
+
+    blood_group = Column(
+        String(10),
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime,
         server_default=func.current_timestamp(),
@@ -134,6 +172,12 @@ class Policy(Base):
         UUID(as_uuid=True),
         primary_key=True,
         server_default=text("gen_random_uuid()"),
+    )
+
+    provider_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("insurance_providers.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     policy_number = Column(
@@ -164,6 +208,26 @@ class Policy(Base):
 
     policy_end_date = Column(
         Date,
+        nullable=True,
+    )
+
+    member_id = Column(
+        String(100),
+        nullable=True,
+    )
+
+    policy_holder_name = Column(
+        String(150),
+        nullable=True,
+    )
+
+    relationship = Column(
+        String(50),
+        nullable=True,
+    )
+
+    tpa_name = Column(
+        String(150),
         nullable=True,
     )
 
@@ -227,6 +291,33 @@ class Claim(Base):
     readiness_score = Column(
         Numeric(5, 2),
         server_default=text("0"),
+    )
+
+    claim_type = Column(
+        String(30),
+        server_default=text("'reimbursement'"),
+        nullable=True,
+    )
+
+    preauth_amount = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    final_approved_amount = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    patient_responsibility = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    discharge_readiness_status = Column(
+        String(40),
+        server_default=text("'Pending Pre-Auth'"),
+        nullable=True,
     )
 
     created_by = Column(
@@ -726,4 +817,546 @@ class VerificationResult(Base):
     updated_at = Column(
         DateTime,
         server_default=func.current_timestamp(),
+    )
+
+class InsuranceProvider(Base):
+    __tablename__ = "insurance_providers"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    name = Column(
+        String(150),
+        unique=True,
+        nullable=False,
+    )
+
+    code = Column(
+        String(50),
+        unique=True,
+        nullable=False,
+    )
+
+    provider_type = Column(
+        String(50),
+        nullable=True,
+    )
+
+    official_website = Column(
+        String(255),
+        nullable=True,
+    )
+
+    official_portal_url = Column(
+        String(255),
+        nullable=True,
+    )
+
+    submission_mode = Column(
+        String(50),
+        nullable=False,
+        server_default=text("'manual'"),
+    )
+
+    supported_claim_types = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("\'[\"cashless\", \"reimbursement\"]\'::jsonb"),
+    )
+
+    required_document_categories = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
+
+    integration_config = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    provider_notes = Column(
+        Text,
+        nullable=True,
+    )
+
+    contact_email = Column(
+        String(255),
+        nullable=True,
+    )
+
+    contact_phone = Column(
+        String(50),
+        nullable=True,
+    )
+
+    portal_url = Column(
+        String(255),
+        nullable=True,
+    )
+
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+
+class PatientConsent(Base):
+    __tablename__ = "patient_consents"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    patient_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    consenter_name = Column(
+        String(150),
+        nullable=False,
+    )
+
+    consenter_relationship = Column(
+        String(50),
+        nullable=False,
+    )
+
+    purpose = Column(
+        String(100),
+        nullable=False,
+    )
+
+    status = Column(
+        String(30),
+        nullable=False,
+        server_default=text("'Given'"),
+    )
+
+    consent_text = Column(
+        Text,
+        nullable=False,
+    )
+
+    ip_address = Column(
+        String(50),
+        nullable=True,
+    )
+
+    consent_timestamp = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+
+class CashlessPreauthorization(Base):
+    __tablename__ = "cashless_preauthorizations"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+
+    room_type = Column(
+        String(50),
+        nullable=True,
+    )
+
+    proposed_treatment = Column(
+        Text,
+        nullable=True,
+    )
+
+    treating_doctor = Column(
+        String(150),
+        nullable=True,
+    )
+
+    doctor_registration_no = Column(
+        String(100),
+        nullable=True,
+    )
+
+    estimated_cost = Column(
+        Numeric(12, 2),
+        nullable=False,
+        server_default=text("0.00"),
+    )
+
+    cost_breakdown = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    status = Column(
+        String(40),
+        nullable=False,
+        server_default=text("'Draft'"),
+    )
+
+    submission_mode = Column(
+        String(40),
+        nullable=True,
+    )
+
+    submission_reference = Column(
+        String(100),
+        nullable=True,
+    )
+
+    submitted_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    submitted_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    initial_approval_amount = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    approval_reference = Column(
+        String(100),
+        nullable=True,
+    )
+
+    approved_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    approval_conditions = Column(
+        Text,
+        nullable=True,
+    )
+
+    approval_letter_doc_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claim_documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    tpa_query_remarks = Column(
+        Text,
+        nullable=True,
+    )
+
+    hospital_query_response = Column(
+        Text,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+    updated_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class TreatmentRecord(Base):
+    __tablename__ = "treatment_records"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    record_date = Column(
+        Date,
+        nullable=False,
+    )
+
+    clinical_notes = Column(
+        Text,
+        nullable=False,
+    )
+
+    procedures_performed = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
+
+    updated_diagnosis = Column(
+        String(255),
+        nullable=True,
+    )
+
+    cumulative_expenses = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    recorded_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+
+class CashlessFinalAuthorization(Base):
+    __tablename__ = "cashless_final_authorizations"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    claim_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+
+    final_billed_amount = Column(
+        Numeric(12, 2),
+        nullable=False,
+        server_default=text("0.00"),
+    )
+
+    status = Column(
+        String(40),
+        nullable=False,
+        server_default=text("'Draft'"),
+    )
+
+    submission_reference = Column(
+        String(100),
+        nullable=True,
+    )
+
+    submitted_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    submitted_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    final_approved_amount = Column(
+        Numeric(12, 2),
+        nullable=True,
+    )
+
+    non_payable_deductions = Column(
+        Numeric(12, 2),
+        nullable=True,
+        server_default=text("0.00"),
+    )
+
+    deduction_breakdown = Column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    patient_responsibility_amount = Column(
+        Numeric(12, 2),
+        nullable=True,
+        server_default=text("0.00"),
+    )
+
+    settlement_letter_doc_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("claim_documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    final_approval_reference = Column(
+        String(100),
+        nullable=True,
+    )
+
+    final_approved_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    tpa_remarks = Column(
+        Text,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+    )
+
+    updated_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    name = Column(
+        String(150),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    org_type = Column(
+        String(50),
+        nullable=False,
+    )
+
+    registration_identifier = Column(
+        String(100),
+        nullable=True,
+    )
+
+    contact_email = Column(
+        String(255),
+        nullable=True,
+    )
+
+    contact_phone = Column(
+        String(50),
+        nullable=True,
+    )
+
+    is_active = Column(
+        Boolean,
+        server_default=text("true"),
+        nullable=False,
+        default=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        nullable=False,
+    )
+
+
+class OrganizationInvitation(Base):
+    __tablename__ = "organization_invitations"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    email = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    role = Column(
+        String(50),
+        nullable=False,
+    )
+
+    organization_name = Column(
+        String(150),
+        nullable=False,
+    )
+
+    token_hash = Column(
+        String(64),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    invited_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    status = Column(
+        String(30),
+        server_default=text("'pending'"),
+        nullable=False,
+        default="pending",
+    )
+
+    expires_at = Column(
+        DateTime,
+        nullable=False,
+    )
+
+    accepted_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=func.current_timestamp(),
+        nullable=False,
     )
